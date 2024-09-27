@@ -186,6 +186,7 @@ import org.whispersystems.textsecuregcm.metrics.MessageMetrics;
 import org.whispersystems.textsecuregcm.metrics.MetricsApplicationEventListener;
 import org.whispersystems.textsecuregcm.metrics.MetricsHttpChannelListener;
 import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
+import org.whispersystems.textsecuregcm.metrics.MicrometerAwsSdkMetricPublisher;
 import org.whispersystems.textsecuregcm.metrics.ReportedMessageMetricsListener;
 import org.whispersystems.textsecuregcm.metrics.TrafficSource;
 import org.whispersystems.textsecuregcm.providers.MultiRecipientMessageProvider;
@@ -208,7 +209,6 @@ import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery2
 import org.whispersystems.textsecuregcm.spam.ChallengeConstraintChecker;
 import org.whispersystems.textsecuregcm.spam.RegistrationFraudChecker;
 import org.whispersystems.textsecuregcm.spam.RegistrationRecoveryChecker;
-import org.whispersystems.textsecuregcm.spam.ReportSpamTokenProvider;
 import org.whispersystems.textsecuregcm.spam.SpamChecker;
 import org.whispersystems.textsecuregcm.spam.SpamFilter;
 import org.whispersystems.textsecuregcm.storage.AccountLockManager;
@@ -394,10 +394,15 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     BankMandateTranslator bankMandateTranslator = new BankMandateTranslator(headerControlledResourceBundleLookup);
 
     environment.lifecycle().manage(new ManagedAwsCrt());
-    DynamoDbAsyncClient dynamoDbAsyncClient = config.getDynamoDbClientConfiguration()
-        .buildAsyncClient(awsCredentialsProvider);
 
-    DynamoDbClient dynamoDbClient = config.getDynamoDbClientConfiguration().buildSyncClient(awsCredentialsProvider);
+    final ExecutorService awsSdkMetricsExecutor = environment.lifecycle()
+        .virtualExecutorService(name(getClass(), "awsSdkMetrics-%d"));
+
+    final DynamoDbAsyncClient dynamoDbAsyncClient = config.getDynamoDbClientConfiguration()
+        .buildAsyncClient(awsCredentialsProvider, new MicrometerAwsSdkMetricPublisher(awsSdkMetricsExecutor, "dynamoDbAsync"));
+
+    final DynamoDbClient dynamoDbClient = config.getDynamoDbClientConfiguration()
+        .buildSyncClient(awsCredentialsProvider, new MicrometerAwsSdkMetricPublisher(awsSdkMetricsExecutor, "dynamoDbSync"));
 
     BlockingQueue<Runnable> messageDeletionQueue = new LinkedBlockingQueue<>();
     Metrics.gaugeCollectionSize(name(getClass(), "messageDeletionQueueSize"), Collections.emptyList(),
@@ -1049,12 +1054,6 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     if (spamFilter.isEmpty()) {
       log.warn("No spam filters installed");
     }
-    final ReportSpamTokenProvider reportSpamTokenProvider = spamFilter
-        .map(SpamFilter::getReportSpamTokenProvider)
-        .orElseGet(() -> {
-          log.warn("No spam-reporting token providers found; using default (no-op) provider as a default");
-          return ReportSpamTokenProvider.noop();
-        });
     final SpamChecker spamChecker = spamFilter
         .map(SpamFilter::getSpamChecker)
         .orElseGet(() -> {
@@ -1123,7 +1122,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new KeyTransparencyController(keyTransparencyServiceClient),
         new MessageController(rateLimiters, messageByteLimitCardinalityEstimator, messageSender, receiptSender,
             accountsManager, messagesManager, pushNotificationManager, pushNotificationScheduler, reportMessageManager,
-            multiRecipientMessageExecutor, messageDeliveryScheduler, reportSpamTokenProvider, clientReleaseManager,
+            multiRecipientMessageExecutor, messageDeliveryScheduler, clientReleaseManager,
             dynamicConfigurationManager, zkSecretParams, spamChecker, messageMetrics, messageDeliveryLoopMonitor,
             Clock.systemUTC()),
         new PaymentsController(currencyManager, paymentsCredentialsGenerator),
