@@ -1,12 +1,9 @@
 package org.whispersystems.textsecuregcm.metrics;
 
-import io.dropwizard.lifecycle.Managed;
 import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.metrics.MetricCollection;
 import software.amazon.awssdk.metrics.MetricPublisher;
 import software.amazon.awssdk.metrics.MetricRecord;
@@ -15,7 +12,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -86,8 +82,6 @@ public class MicrometerAwsSdkMetricPublisher implements MetricPublisher {
 
   private static final String CLIENT_NAME_TAG = "clientName";
 
-  private static final Logger logger = LoggerFactory.getLogger(MicrometerAwsSdkMetricPublisher.class);
-
   /**
    * Constructs a new metric publisher that uses the given executor service to record metrics and tags metrics with the
    * given client name.
@@ -106,13 +100,13 @@ public class MicrometerAwsSdkMetricPublisher implements MetricPublisher {
 
   @Override
   public void publish(final MetricCollection metricCollection) {
-    if (METRIC_COLLECTION_TYPE_API_CALL.equals(metricCollection.name())) {
+    /* if (METRIC_COLLECTION_TYPE_API_CALL.equals(metricCollection.name())) {
       try {
         recordMetricsExecutorService.submit(() -> recordApiCallMetrics(metricCollection));
       } catch (final RejectedExecutionException ignored) {
         // This can happen if clients make new calls to an upstream service while the server is shutting down
       }
-    }
+    } */
   }
 
   private void recordApiCallMetrics(final MetricCollection apiCallMetricCollection) {
