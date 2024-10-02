@@ -7,7 +7,6 @@ package org.whispersystems.textsecuregcm.push;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -20,7 +19,6 @@ import io.lettuce.core.cluster.SlotHash;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -38,7 +36,6 @@ import org.whispersystems.textsecuregcm.redis.RedisClusterExtension;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.Device;
-import org.whispersystems.textsecuregcm.util.Pair;
 import org.whispersystems.textsecuregcm.util.TestClock;
 
 class PushNotificationSchedulerTest {
@@ -59,7 +56,6 @@ class PushNotificationSchedulerTest {
   private static final String ACCOUNT_NUMBER = "+18005551234";
   private static final byte DEVICE_ID = 1;
   private static final String APN_ID = RandomStringUtils.randomAlphanumeric(32);
-  private static final String VOIP_APN_ID = RandomStringUtils.randomAlphanumeric(32);
 
   @BeforeEach
   void setUp() throws Exception {
@@ -67,7 +63,6 @@ class PushNotificationSchedulerTest {
     device = mock(Device.class);
     when(device.getId()).thenReturn(DEVICE_ID);
     when(device.getApnId()).thenReturn(APN_ID);
-    when(device.getVoipApnId()).thenReturn(VOIP_APN_ID);
     when(device.getLastSeen()).thenReturn(System.currentTimeMillis());
 
     account = mock(Account.class);
@@ -93,57 +88,6 @@ class PushNotificationSchedulerTest {
 
     pushNotificationScheduler = new PushNotificationScheduler(REDIS_CLUSTER_EXTENSION.getRedisCluster(),
         apnSender, fcmSender, accountsManager, clock, 1, 1);
-  }
-
-  @Test
-  void testClusterInsert() throws ExecutionException, InterruptedException {
-    final String endpoint = PushNotificationScheduler.getVoipEndpointKey(ACCOUNT_UUID, DEVICE_ID);
-    final long currentTimeMillis = System.currentTimeMillis();
-
-    assertTrue(
-        pushNotificationScheduler.getPendingDestinationsForRecurringApnsVoipNotifications(SlotHash.getSlot(endpoint), 1).isEmpty());
-
-    clock.pin(Instant.ofEpochMilli(currentTimeMillis - 30_000));
-    pushNotificationScheduler.scheduleRecurringApnsVoipNotification(account, device).toCompletableFuture().get();
-
-    clock.pin(Instant.ofEpochMilli(currentTimeMillis));
-    final List<String> pendingDestinations = pushNotificationScheduler.getPendingDestinationsForRecurringApnsVoipNotifications(SlotHash.getSlot(endpoint), 2);
-    assertEquals(1, pendingDestinations.size());
-
-    final Pair<UUID, Byte> aciAndDeviceId =
-        PushNotificationScheduler.decodeAciAndDeviceId(pendingDestinations.getFirst());
-
-    assertEquals(ACCOUNT_UUID, aciAndDeviceId.first());
-    assertEquals(DEVICE_ID, aciAndDeviceId.second());
-
-    assertTrue(
-        pushNotificationScheduler.getPendingDestinationsForRecurringApnsVoipNotifications(SlotHash.getSlot(endpoint), 1).isEmpty());
-  }
-
-  @Test
-  void testProcessRecurringVoipNotifications() throws ExecutionException, InterruptedException {
-    final PushNotificationScheduler.NotificationWorker worker = pushNotificationScheduler.new NotificationWorker(1);
-    final long currentTimeMillis = System.currentTimeMillis();
-
-    clock.pin(Instant.ofEpochMilli(currentTimeMillis - 30_000));
-    pushNotificationScheduler.scheduleRecurringApnsVoipNotification(account, device).toCompletableFuture().get();
-
-    clock.pin(Instant.ofEpochMilli(currentTimeMillis));
-
-    final int slot = SlotHash.getSlot(PushNotificationScheduler.getVoipEndpointKey(ACCOUNT_UUID, DEVICE_ID));
-
-    assertEquals(1, worker.processRecurringApnsVoipNotifications(slot));
-
-    final ArgumentCaptor<PushNotification> notificationCaptor = ArgumentCaptor.forClass(PushNotification.class);
-    verify(apnSender).sendNotification(notificationCaptor.capture());
-
-    final PushNotification pushNotification = notificationCaptor.getValue();
-
-    assertEquals(VOIP_APN_ID, pushNotification.deviceToken());
-    assertEquals(account, pushNotification.destination());
-    assertEquals(device, pushNotification.destinationDevice());
-
-    assertEquals(0, worker.processRecurringApnsVoipNotifications(slot));
   }
 
   @Test
@@ -227,8 +171,6 @@ class PushNotificationSchedulerTest {
     assertEquals(device, pushNotification.destinationDevice());
     assertEquals(PushNotification.NotificationType.NOTIFICATION, pushNotification.notificationType());
     assertFalse(pushNotification.urgent());
-
-    assertEquals(0, worker.processRecurringApnsVoipNotifications(slot));
 
     assertEquals(Optional.empty(),
         pushNotificationScheduler.getNextScheduledBackgroundApnsNotificationTimestamp(account, device));
