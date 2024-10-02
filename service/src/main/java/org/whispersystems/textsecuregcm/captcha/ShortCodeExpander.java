@@ -23,6 +23,7 @@ public class ShortCodeExpander {
 
   private final HttpClient client;
   private final URI shortenerHost;
+  private final Set<String> validShortCodes = Set.of("validCode1", "validCode2", "validCode3"); // Add valid short codes here
 
   public ShortCodeExpander(final HttpClient client, final String shortenerHost) {
     this.client = client;
@@ -30,6 +31,9 @@ public class ShortCodeExpander {
   }
 
   public Optional<String> retrieve(final String shortCode) throws IOException {
+    if (!isValidShortCode(shortCode)) {
+      throw new IOException("Invalid short code");
+    }
     final URI uri = shortenerHost.resolve(URLEncoder.encode(shortCode, StandardCharsets.UTF_8));
     final HttpRequest request = HttpRequest.newBuilder().uri(uri).GET().build();
 
@@ -46,6 +50,7 @@ public class ShortCodeExpander {
     }
   }
 
-
-
+  private boolean isValidShortCode(String shortCode) {
+    return validShortCodes.contains(shortCode);
+  }
 }
