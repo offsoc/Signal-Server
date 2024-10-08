@@ -93,7 +93,8 @@ class AccountsManagerConcurrentModificationIntegrationTest {
         Tables.NUMBERS.tableName(),
         Tables.PNI_ASSIGNMENTS.tableName(),
         Tables.USERNAMES.tableName(),
-        Tables.DELETED_ACCOUNTS.tableName());
+        Tables.DELETED_ACCOUNTS.tableName(),
+        Tables.USED_LINK_DEVICE_TOKENS.tableName());
 
     {
       //noinspection unchecked
@@ -135,6 +136,7 @@ class AccountsManagerConcurrentModificationIntegrationTest {
           mock(Executor.class),
           mock(Executor.class),
           mock(Clock.class),
+          "link-device-secret".getBytes(StandardCharsets.UTF_8),
           dynamicConfigurationManager
       );
     }

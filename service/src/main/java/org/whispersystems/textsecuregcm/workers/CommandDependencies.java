@@ -180,7 +180,8 @@ record CommandDependencies(
         configuration.getDynamoDbTables().getAccounts().getPhoneNumberTableName(),
         configuration.getDynamoDbTables().getAccounts().getPhoneNumberIdentifierTableName(),
         configuration.getDynamoDbTables().getAccounts().getUsernamesTableName(),
-        configuration.getDynamoDbTables().getDeletedAccounts().getTableName());
+        configuration.getDynamoDbTables().getDeletedAccounts().getTableName(),
+        configuration.getDynamoDbTables().getAccounts().getUsedLinkDeviceTokensTableName());
     PhoneNumberIdentifiers phoneNumberIdentifiers = new PhoneNumberIdentifiers(dynamoDbClient,
         configuration.getDynamoDbTables().getPhoneNumberIdentifiers().getTableName());
     Profiles profiles = new Profiles(dynamoDbClient, dynamoDbAsyncClient,
@@ -228,7 +229,7 @@ record CommandDependencies(
         accountLockManager, keys, messagesManager, profilesManager,
         secureStorageClient, secureValueRecovery2Client, clientPresenceManager,
         registrationRecoveryPasswordsManager, clientPublicKeysManager, accountLockExecutor, clientPresenceExecutor,
-        clock, dynamicConfigurationManager);
+        clock, configuration.getLinkDeviceSecretConfiguration().secret().value(), dynamicConfigurationManager);
     RateLimiters rateLimiters = RateLimiters.createAndValidate(configuration.getLimitsConfiguration(),
         dynamicConfigurationManager, rateLimitersCluster);
     final BackupsDb backupsDb =
