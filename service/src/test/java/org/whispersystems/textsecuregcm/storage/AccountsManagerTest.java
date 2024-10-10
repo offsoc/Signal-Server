@@ -77,7 +77,7 @@ import org.whispersystems.textsecuregcm.identity.AciServiceIdentifier;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.identity.PniServiceIdentifier;
 import org.whispersystems.textsecuregcm.push.ClientPresenceManager;
-import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisCluster;
+import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClusterClient;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
 import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery2Client;
 import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecoveryException;
@@ -230,7 +230,7 @@ class AccountsManagerTest {
 
     CLOCK = TestClock.now();
 
-    final FaultTolerantRedisCluster redisCluster = RedisClusterHelper.builder()
+    final FaultTolerantRedisClusterClient redisCluster = RedisClusterHelper.builder()
         .stringCommands(commands)
         .stringAsyncCommands(asyncCommands)
         .build();
@@ -917,7 +917,7 @@ class AccountsManagerTest {
   @ValueSource(booleans = {true, false})
   void testCreateWithStorageCapability(final boolean hasStorage) throws InterruptedException {
     final AccountAttributes attributes = new AccountAttributes(false, 1, 2, null, null,
-            true, new DeviceCapabilities(hasStorage, false, false, false, false));
+            true, new DeviceCapabilities(hasStorage, false, false, false));
 
     final Account account = createAccount("+18005550123", attributes);
 
@@ -942,7 +942,7 @@ class AccountsManagerTest {
     final byte[] deviceNameCiphertext = "device-name".getBytes(StandardCharsets.UTF_8);
     final String password = "password";
     final String signalAgent = "OWT";
-    final DeviceCapabilities deviceCapabilities = new DeviceCapabilities(true, true, true, false, false);
+    final DeviceCapabilities deviceCapabilities = new DeviceCapabilities(true, true, false, false);
     final int aciRegistrationId = 17;
     final int pniRegistrationId = 19;
     final ECSignedPreKey aciSignedPreKey = KeysHelper.signedECPreKey(1, aciKeyPair);
