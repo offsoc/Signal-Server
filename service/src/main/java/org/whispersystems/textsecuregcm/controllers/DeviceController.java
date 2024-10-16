@@ -13,14 +13,17 @@ import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.headers.Header;
+import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
 import javax.validation.Valid;
@@ -53,11 +56,13 @@ import org.whispersystems.textsecuregcm.entities.AccountAttributes;
 import org.whispersystems.textsecuregcm.entities.DeviceActivationRequest;
 import org.whispersystems.textsecuregcm.entities.DeviceInfo;
 import org.whispersystems.textsecuregcm.entities.DeviceInfoList;
-import org.whispersystems.textsecuregcm.entities.DeviceResponse;
+import org.whispersystems.textsecuregcm.entities.LinkDeviceResponse;
 import org.whispersystems.textsecuregcm.entities.LinkDeviceRequest;
 import org.whispersystems.textsecuregcm.entities.PreKeySignatureValidator;
 import org.whispersystems.textsecuregcm.entities.ProvisioningMessage;
+import org.whispersystems.textsecuregcm.entities.RemoteAttachment;
 import org.whispersystems.textsecuregcm.entities.SetPublicKeyRequest;
+import org.whispersystems.textsecuregcm.entities.TransferArchiveUploadedRequest;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.limits.RateLimiters;
 import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
@@ -222,7 +227,7 @@ public class DeviceController {
   @ApiResponse(responseCode = "429", description = "Too many attempts", headers = @Header(
       name = "Retry-After",
       description = "If present, an positive integer indicating the number of seconds before a subsequent attempt could succeed"))
-  public DeviceResponse linkDevice(@HeaderParam(HttpHeaders.AUTHORIZATION) BasicAuthorizationHeader authorizationHeader,
+  public LinkDeviceResponse linkDevice(@HeaderParam(HttpHeaders.AUTHORIZATION) BasicAuthorizationHeader authorizationHeader,
       @HeaderParam(HttpHeaders.USER_AGENT) @Nullable String userAgent,
       @NotNull @Valid LinkDeviceRequest linkDeviceRequest,
       @Context ContainerRequest containerRequest)
@@ -295,7 +300,7 @@ public class DeviceController {
                   deviceActivationRequest.aciPqLastResortPreKey(),
                   deviceActivationRequest.pniPqLastResortPreKey()),
               linkDeviceRequest.verificationCode())
-          .thenApply(accountAndDevice -> new DeviceResponse(
+          .thenApply(accountAndDevice -> new LinkDeviceResponse(
               accountAndDevice.first().getIdentifier(IdentityType.ACI),
               accountAndDevice.first().getIdentifier(IdentityType.PNI),
               accountAndDevice.second().getId()))
@@ -317,11 +322,11 @@ public class DeviceController {
           Waits for a new device to be linked to an account and returns basic information about the new device when
           available.
           """)
-  @ApiResponse(responseCode = "200", description = "The specified was linked to an account")
-  @ApiResponse(responseCode = "204", description = "No device was linked to the account before the call completed")
+  @ApiResponse(responseCode = "200", description = "A device was linked to an account using the token associated with the given token identifier",
+      content = @Content(schema = @Schema(implementation = DeviceInfo.class)))
+  @ApiResponse(responseCode = "204", description = "No device was linked to the account before the call completed; clients may repeat the call to continue waiting")
   @ApiResponse(responseCode = "400", description = "The given token identifier or timeout was invalid")
   @ApiResponse(responseCode = "429", description = "Rate-limited; try again after the prescribed delay")
-  @Schema(description = "Basic information about the linked device", implementation = DeviceInfo.class)
   public CompletableFuture<Response> waitForLinkedDevice(
       @ReadOnly @Auth final AuthenticatedDevice authenticatedDevice,
 
@@ -430,5 +435,67 @@ public class DeviceController {
     isDowngrade |= account.isDeleteSyncSupported() && !capabilities.deleteSync();
     isDowngrade |= account.isVersionedExpirationTimerSupported() && !capabilities.versionedExpirationTimer();
     return isDowngrade;
+  }
+
+  @PUT
+  @Consumes(MediaType.APPLICATION_JSON)
+  @Produces(MediaType.APPLICATION_JSON)
+  @Path("/transfer_archive")
+  @Operation(
+      summary = "Signals that a transfer archive has been uploaded for a specific linked device",
+      description = """
+          Signals that a transfer archive has been uploaded for a specific linked device. Devices waiting via the "wait
+          for transfer archive" endpoint will be notified that the new archive is available.
+          """)
+  @ApiResponse(responseCode = "204", description = "Success")
+  @ApiResponse(responseCode = "422", description = "The request object could not be parsed or was otherwise invalid")
+  @ApiResponse(responseCode = "429", description = "Rate-limited; try again after the prescribed delay")
+  public CompletionStage<Void> recordTransferArchiveUploaded(@ReadOnly @Auth final AuthenticatedDevice authenticatedDevice,
+      @NotNull @Valid final TransferArchiveUploadedRequest transferArchiveUploadedRequest) {
+
+    return rateLimiters.getUploadTransferArchiveLimiter().validateAsync(authenticatedDevice.getAccount().getIdentifier(IdentityType.ACI))
+        .thenCompose(ignored -> accounts.recordTransferArchiveUpload(authenticatedDevice.getAccount(),
+            transferArchiveUploadedRequest.destinationDeviceId(),
+            Instant.ofEpochMilli(transferArchiveUploadedRequest.destinationDeviceCreated()),
+            transferArchiveUploadedRequest.transferArchive()));
+  }
+
+  @GET
+  @Produces(MediaType.APPLICATION_JSON)
+  @Path("/transfer_archive")
+  @Operation(summary = "Wait for a new transfer archive to be uploaded",
+      description = """
+          Waits for a new transfer archive to be uploaded for the authenticated device and returns the location of the
+          archive when available.
+          """)
+  @ApiResponse(responseCode = "200", description = "A new transfer archive was uploaded for the authenticated device",
+      content = @Content(schema = @Schema(implementation = RemoteAttachment.class)))
+  @ApiResponse(responseCode = "204", description = "No transfer archive was uploaded before the call completed; clients may repeat the call to continue waiting")
+  @ApiResponse(responseCode = "400", description = "The given timeout was invalid")
+  @ApiResponse(responseCode = "429", description = "Rate-limited; try again after the prescribed delay")
+  public CompletionStage<Response> waitForTransferArchive(@ReadOnly @Auth final AuthenticatedDevice authenticatedDevice,
+
+      @QueryParam("timeout")
+      @DefaultValue("30")
+      @Min(1)
+      @Max(3600)
+      @Schema(requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+          minimum = "1",
+          maximum = "3600",
+          description = """
+                The amount of time (in seconds) to wait for a response. If a transfer archive for the authenticated
+                device is not available within the given amount of time, this endpoint will return a status of HTTP/204.
+              """) final int timeoutSeconds) {
+
+    final String rateLimiterKey = authenticatedDevice.getAccount().getIdentifier(IdentityType.ACI) +
+        ":" + authenticatedDevice.getAuthenticatedDevice().getId();
+
+    return rateLimiters.getWaitForTransferArchiveLimiter().validateAsync(rateLimiterKey)
+        .thenCompose(ignored -> accounts.waitForTransferArchive(authenticatedDevice.getAccount(),
+            authenticatedDevice.getAuthenticatedDevice(),
+            Duration.ofSeconds(timeoutSeconds)))
+        .thenApply(maybeTransferArchive -> maybeTransferArchive
+            .map(transferArchive -> Response.status(Response.Status.OK).entity(transferArchive).build())
+            .orElseGet(() -> Response.status(Response.Status.NO_CONTENT).build()));
   }
 }
