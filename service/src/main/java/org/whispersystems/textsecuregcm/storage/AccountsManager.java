@@ -163,8 +163,8 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   private static final ObjectWriter ACCOUNT_REDIS_JSON_WRITER = SystemMapper.jsonMapper()
       .writer(SystemMapper.excludingField(Account.class, List.of("uuid")));
 
-  private static Duration MESSAGE_POLL_INTERVAL = Duration.ofSeconds(1);
-  private static Duration MAX_SERVER_CLOCK_DRIFT = Duration.ofSeconds(5);
+  private static final Duration MESSAGE_POLL_INTERVAL = Duration.ofSeconds(1);
+  private static final Duration MAX_SERVER_CLOCK_DRIFT = Duration.ofSeconds(5);
 
   // An account that's used at least daily will get reset in the cache at least once per day when its "last seen"
   // timestamp updates; expiring entries after two days will help clear out "zombie" cache entries that are read
@@ -292,6 +292,18 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
 
         String accountCreationType = maybeRecentlyDeletedAccountIdentifier.isPresent() ? "recently-deleted" : "new";
 
+        final String pushTokenType;
+
+        if (primaryDeviceSpec.apnRegistrationId().isPresent()) {
+          pushTokenType = "apns";
+        } else if (primaryDeviceSpec.gcmRegistrationId().isPresent()) {
+          pushTokenType = "fcm";
+        } else {
+          pushTokenType = "none";
+        }
+
+        String previousPushTokenType = null;
+
         try {
           accounts.create(account, keysManager.buildWriteItemsForNewDevice(account.getIdentifier(IdentityType.ACI),
               account.getIdentifier(IdentityType.PNI),
@@ -302,6 +314,14 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
               primaryDeviceSpec.pniPqLastResortPreKey()));
         } catch (final AccountAlreadyExistsException e) {
           accountCreationType = "re-registration";
+
+          if (StringUtils.isNotBlank(e.getExistingAccount().getPrimaryDevice().getApnId())) {
+            previousPushTokenType = "apns";
+          } else if (StringUtils.isNotBlank(e.getExistingAccount().getPrimaryDevice().getGcmId())) {
+            previousPushTokenType = "fcm";
+          } else {
+            previousPushTokenType = "none";
+          }
 
           final UUID aci = e.getExistingAccount().getIdentifier(IdentityType.ACI);
           final UUID pni = e.getExistingAccount().getIdentifier(IdentityType.PNI);
@@ -352,11 +372,17 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
 
         redisSet(account);
 
-        Metrics.counter(CREATE_COUNTER_NAME, Tags.of(UserAgentTagUtil.getPlatformTag(userAgent),
-                Tag.of("type", accountCreationType),
-                Tag.of("hasPushToken", String.valueOf(
-                    primaryDeviceSpec.apnRegistrationId().isPresent() || primaryDeviceSpec.gcmRegistrationId().isPresent()))))
-            .increment();
+        Tags tags = Tags.of(UserAgentTagUtil.getPlatformTag(userAgent),
+            Tag.of("type", accountCreationType),
+            Tag.of("hasPushToken", String.valueOf(
+                primaryDeviceSpec.apnRegistrationId().isPresent() || primaryDeviceSpec.gcmRegistrationId().isPresent())),
+            Tag.of("pushTokenType", pushTokenType));
+
+        if (StringUtils.isNotBlank(previousPushTokenType)) {
+          tags = tags.and(Tag.of("previousPushTokenType", previousPushTokenType));
+        }
+
+        Metrics.counter(CREATE_COUNTER_NAME, tags).increment();
 
         accountAttributes.recoveryPassword().ifPresent(registrationRecoveryPassword ->
             registrationRecoveryPasswordsManager.storeForCurrentNumber(account.getNumber(), registrationRecoveryPassword));
@@ -738,7 +764,6 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     }
 
     account.getDevices()
-        .stream()
         .forEach(device -> device.setPhoneNumberIdentityRegistrationId(pniRegistrationIds.get(device.getId())));
 
     account.setPhoneNumberIdentityKey(pniIdentityKey);
