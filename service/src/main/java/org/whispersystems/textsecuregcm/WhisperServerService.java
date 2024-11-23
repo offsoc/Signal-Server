@@ -262,6 +262,7 @@ import org.whispersystems.textsecuregcm.workers.CheckDynamicConfigurationCommand
 import org.whispersystems.textsecuregcm.workers.DeleteUserCommand;
 import org.whispersystems.textsecuregcm.workers.IdleDeviceNotificationSchedulerFactory;
 import org.whispersystems.textsecuregcm.workers.MessagePersisterServiceCommand;
+import org.whispersystems.textsecuregcm.workers.MigrateRegistrationRecoveryPasswordsCommand;
 import org.whispersystems.textsecuregcm.workers.NotifyIdleDevicesCommand;
 import org.whispersystems.textsecuregcm.workers.ProcessScheduledJobsServiceCommand;
 import org.whispersystems.textsecuregcm.workers.RemoveExpiredAccountsCommand;
@@ -329,6 +330,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     bootstrap.addCommand(new ProcessScheduledJobsServiceCommand("process-idle-device-notification-jobs",
         "Processes scheduled jobs to send notifications to idle devices",
         new IdleDeviceNotificationSchedulerFactory()));
+
+    bootstrap.addCommand(new MigrateRegistrationRecoveryPasswordsCommand());
   }
 
   @Override
@@ -404,7 +407,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         config.getDynamoDbTables().getAccounts().getUsedLinkDeviceTokensTableName());
     ClientReleases clientReleases = new ClientReleases(dynamoDbAsyncClient,
         config.getDynamoDbTables().getClientReleases().getTableName());
-    PhoneNumberIdentifiers phoneNumberIdentifiers = new PhoneNumberIdentifiers(dynamoDbClient,
+    PhoneNumberIdentifiers phoneNumberIdentifiers = new PhoneNumberIdentifiers(dynamoDbAsyncClient,
         config.getDynamoDbTables().getPhoneNumberIdentifiers().getTableName());
     Profiles profiles = new Profiles(dynamoDbClient, dynamoDbAsyncClient,
         config.getDynamoDbTables().getProfiles().getTableName());
@@ -583,8 +586,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
 
     ExperimentEnrollmentManager experimentEnrollmentManager = new ExperimentEnrollmentManager(
         dynamicConfigurationManager);
-    RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager = new RegistrationRecoveryPasswordsManager(
-        registrationRecoveryPasswords);
+    RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager =
+        new RegistrationRecoveryPasswordsManager(registrationRecoveryPasswords, phoneNumberIdentifiers);
     UsernameHashZkProofVerifier usernameHashZkProofVerifier = new UsernameHashZkProofVerifier();
 
     RegistrationServiceClient registrationServiceClient = config.getRegistrationServiceConfiguration()

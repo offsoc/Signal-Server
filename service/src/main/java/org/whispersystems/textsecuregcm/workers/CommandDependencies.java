@@ -78,6 +78,7 @@ record CommandDependencies(
     MessagesCache messagesCache,
     MessagesManager messagesManager,
     KeysManager keysManager,
+    RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager,
     APNSender apnSender,
     FcmSender fcmSender,
     PushNotificationManager pushNotificationManager,
@@ -170,9 +171,6 @@ record CommandDependencies(
         dynamoDbAsyncClient
     );
 
-    RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager = new RegistrationRecoveryPasswordsManager(
-        registrationRecoveryPasswords);
-
     ClientPublicKeys clientPublicKeys =
         new ClientPublicKeys(dynamoDbAsyncClient, configuration.getDynamoDbTables().getClientPublicKeys().getTableName());
 
@@ -185,7 +183,7 @@ record CommandDependencies(
         configuration.getDynamoDbTables().getAccounts().getUsernamesTableName(),
         configuration.getDynamoDbTables().getDeletedAccounts().getTableName(),
         configuration.getDynamoDbTables().getAccounts().getUsedLinkDeviceTokensTableName());
-    PhoneNumberIdentifiers phoneNumberIdentifiers = new PhoneNumberIdentifiers(dynamoDbClient,
+    PhoneNumberIdentifiers phoneNumberIdentifiers = new PhoneNumberIdentifiers(dynamoDbAsyncClient,
         configuration.getDynamoDbTables().getPhoneNumberIdentifiers().getTableName());
     Profiles profiles = new Profiles(dynamoDbClient, dynamoDbAsyncClient,
         configuration.getDynamoDbTables().getProfiles().getTableName());
@@ -225,6 +223,8 @@ record CommandDependencies(
         configuration.getDynamoDbTables().getDeletedAccountsLock().getTableName());
     ClientPublicKeysManager clientPublicKeysManager =
         new ClientPublicKeysManager(clientPublicKeys, accountLockManager, accountLockExecutor);
+    RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager =
+        new RegistrationRecoveryPasswordsManager(registrationRecoveryPasswords, phoneNumberIdentifiers);
     AccountsManager accountsManager = new AccountsManager(accounts, phoneNumberIdentifiers, cacheCluster,
         pubsubClient, accountLockManager, keys, messagesManager, profilesManager,
         secureStorageClient, secureValueRecovery2Client, disconnectionRequestManager,
@@ -278,6 +278,7 @@ record CommandDependencies(
         messagesCache,
         messagesManager,
         keys,
+        registrationRecoveryPasswordsManager,
         apnSender,
         fcmSender,
         pushNotificationManager,

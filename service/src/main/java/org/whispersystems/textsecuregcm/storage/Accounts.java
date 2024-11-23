@@ -240,9 +240,10 @@ public class Accounts extends AbstractDynamoDbStore {
       // Clear any "recently deleted account" record for this number since, if it existed, we've used its old ACI for
       // the newly-created account.
       final TransactWriteItem deletedAccountDelete = buildRemoveDeletedAccount(account.getNumber());
+      final TransactWriteItem deletedAccountDeletePNI = buildRemoveDeletedAccount(account.getPhoneNumberIdentifier());
 
       final Collection<TransactWriteItem> writeItems = new ArrayList<>(
-          List.of(phoneNumberConstraintPut, phoneNumberIdentifierConstraintPut, accountPut, deletedAccountDelete));
+          List.of(phoneNumberConstraintPut, phoneNumberIdentifierConstraintPut, accountPut, deletedAccountDeletePNI, deletedAccountDelete));
 
       writeItems.addAll(additionalWriteItems);
 
@@ -266,8 +267,9 @@ public class Accounts extends AbstractDynamoDbStore {
         if (conditionalCheckFailed(phoneNumberConstraintCancellationReason)
             || conditionalCheckFailed(phoneNumberIdentifierConstraintCancellationReason)) {
 
-          // In theory, both reasons should trip in tandem and either should give us the information we need. Even so,
-          // we'll be cautious here and make sure we're choosing a condition check that really failed.
+          // Both reasons should trip in tandem and either should give us the information we need. However, phone number
+          // canonicalization can cause multiple e164s to have the same PNI, so we make sure we're choosing a condition
+          // check that really failed.
           final CancellationReason reason = conditionalCheckFailed(phoneNumberConstraintCancellationReason)
               ? phoneNumberConstraintCancellationReason
               : phoneNumberIdentifierConstraintCancellationReason;
@@ -436,6 +438,7 @@ public class Accounts extends AbstractDynamoDbStore {
         writeItems.add(buildDelete(phoneNumberIdentifierConstraintTableName, ATTR_PNI_UUID, originalPni));
         writeItems.add(buildConstraintTablePut(phoneNumberIdentifierConstraintTableName, uuidAttr, ATTR_PNI_UUID, pniAttr));
         writeItems.add(buildRemoveDeletedAccount(number));
+        writeItems.add(buildRemoveDeletedAccount(phoneNumberIdentifier));
         maybeDisplacedAccountIdentifier.ifPresent(displacedAccountIdentifier ->
             writeItems.add(buildPutDeletedAccount(displacedAccountIdentifier, originalNumber)));
 
@@ -1174,6 +1177,15 @@ public class Accounts extends AbstractDynamoDbStore {
         .build();
   }
 
+  private TransactWriteItem buildRemoveDeletedAccount(final UUID pni) {
+    return TransactWriteItem.builder()
+        .delete(Delete.builder()
+            .tableName(deletedAccountsTableName)
+            .key(Map.of(DELETED_ACCOUNTS_KEY_ACCOUNT_E164, AttributeValues.fromString(pni.toString())))
+            .build())
+        .build();
+  }
+
   @Nonnull
   public CompletableFuture<Optional<Account>> getByAccountIdentifierAsync(final UUID uuid) {
     return AsyncTimerUtil.record(GET_BY_UUID_TIMER, () -> itemByKeyAsync(accountsTableName, KEY_ACCOUNT_UUID, AttributeValues.fromUUID(uuid))
@@ -1205,11 +1217,10 @@ public class Accounts extends AbstractDynamoDbStore {
       return Optional.empty();
     }
 
-    if (response.count() > 1) {
-      throw new RuntimeException("Impossible result: more than one phone number returned for UUID: " + uuid);
-    }
-
-    return Optional.ofNullable(response.items().get(0).get(DELETED_ACCOUNTS_KEY_ACCOUNT_E164).s());
+    return response.items().stream()
+        .map(item -> item.get(DELETED_ACCOUNTS_KEY_ACCOUNT_E164).s())
+        .filter(e164OrPni -> e164OrPni.startsWith("+"))
+        .findFirst();
   }
 
   public CompletableFuture<Void> delete(final UUID uuid, final List<TransactWriteItem> additionalWriteItems) {
@@ -1407,9 +1418,9 @@ public class Accounts extends AbstractDynamoDbStore {
 
     return TransactWriteItem.builder()
         .put(Put.builder()
-            .conditionExpression("attribute_not_exists(#number) OR #number = :number")
-            .expressionAttributeNames(Map.of("#number", ATTR_ACCOUNT_E164))
-            .expressionAttributeValues(Map.of(":number", numberAttr))
+            .conditionExpression("attribute_not_exists(#pni) OR #pni = :pni")
+            .expressionAttributeNames(Map.of("#pni", ATTR_PNI_UUID))
+            .expressionAttributeValues(Map.of(":pni", pniUuidAttr))
             .tableName(accountsTableName)
             .item(item)
             .build())

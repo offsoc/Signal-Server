@@ -9,9 +9,9 @@ import static org.mockito.Mockito.verify;
 
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDBLockClient;
 import com.amazonaws.services.dynamodbv2.ReleaseLockOptions;
-import com.google.i18n.phonenumbers.PhoneNumberUtil;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -27,11 +27,8 @@ class AccountLockManagerTest {
 
   private AccountLockManager accountLockManager;
 
-  private static final String FIRST_NUMBER = PhoneNumberUtil.getInstance().format(
-      PhoneNumberUtil.getInstance().getExampleNumber("US"), PhoneNumberUtil.PhoneNumberFormat.E164);
-
-  private static final String SECOND_NUMBER = PhoneNumberUtil.getInstance().format(
-      PhoneNumberUtil.getInstance().getExampleNumber("JP"), PhoneNumberUtil.PhoneNumberFormat.E164);
+  private static final UUID FIRST_PNI = UUID.randomUUID();
+  private static final UUID SECOND_PNI = UUID.randomUUID();
 
   @BeforeEach
   void setUp() {
@@ -51,7 +48,8 @@ class AccountLockManagerTest {
 
   @Test
   void withLock() throws InterruptedException {
-    accountLockManager.withLock(List.of(FIRST_NUMBER, SECOND_NUMBER), () -> {}, executor);
+    accountLockManager.withLock(List.of(FIRST_PNI, SECOND_PNI), () -> {
+    }, executor);
 
     verify(lockClient, times(2)).acquireLock(any());
     verify(lockClient, times(2)).releaseLock(any(ReleaseLockOptions.class));
@@ -59,8 +57,8 @@ class AccountLockManagerTest {
 
   @Test
   void withLockTaskThrowsException() throws InterruptedException {
-    assertThrows(RuntimeException.class, () -> accountLockManager.withLock(List.of(FIRST_NUMBER, SECOND_NUMBER), () -> {
-      throw new RuntimeException();
+    assertThrows(RuntimeException.class, () -> accountLockManager.withLock(List.of(FIRST_PNI, SECOND_PNI), () -> {
+          throw new RuntimeException();
     }, executor));
 
     verify(lockClient, times(2)).acquireLock(any());
@@ -71,14 +69,16 @@ class AccountLockManagerTest {
   void withLockEmptyList() {
     final Runnable task = mock(Runnable.class);
 
-    assertThrows(IllegalArgumentException.class, () -> accountLockManager.withLock(Collections.emptyList(), () -> {}, executor));
+    assertThrows(IllegalArgumentException.class, () -> accountLockManager.withLock(Collections.emptyList(), () -> {
+        },
+        executor));
     verify(task, never()).run();
   }
 
   @Test
   void withLockAsync() throws InterruptedException {
-    accountLockManager.withLockAsync(List.of(FIRST_NUMBER, SECOND_NUMBER),
-        () -> CompletableFuture.completedFuture(null), executor).join();
+    accountLockManager.withLockAsync(
+        List.of(FIRST_PNI, SECOND_PNI), () -> CompletableFuture.completedFuture(null), executor).join();
 
     verify(lockClient, times(2)).acquireLock(any());
     verify(lockClient, times(2)).releaseLock(any(ReleaseLockOptions.class));
@@ -87,8 +87,9 @@ class AccountLockManagerTest {
   @Test
   void withLockAsyncTaskThrowsException() throws InterruptedException {
     assertThrows(RuntimeException.class,
-        () -> accountLockManager.withLockAsync(List.of(FIRST_NUMBER, SECOND_NUMBER),
-            () -> CompletableFuture.failedFuture(new RuntimeException()), executor).join());
+        () -> accountLockManager.withLockAsync(
+                List.of(FIRST_PNI, SECOND_PNI), () -> CompletableFuture.failedFuture(new RuntimeException()), executor)
+            .join());
 
     verify(lockClient, times(2)).acquireLock(any());
     verify(lockClient, times(2)).releaseLock(any(ReleaseLockOptions.class));
@@ -99,8 +100,8 @@ class AccountLockManagerTest {
     final Runnable task = mock(Runnable.class);
 
     assertThrows(IllegalArgumentException.class,
-        () -> accountLockManager.withLockAsync(Collections.emptyList(),
-            () -> CompletableFuture.completedFuture(null), executor));
+        () -> accountLockManager.withLockAsync(Collections.emptyList(), () -> CompletableFuture.completedFuture(null),
+            executor));
 
     verify(task, never()).run();
   }

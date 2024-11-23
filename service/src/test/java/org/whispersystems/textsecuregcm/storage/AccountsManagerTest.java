@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyByte;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -65,6 +66,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.stubbing.Answer;
@@ -194,9 +196,9 @@ class AccountsManagerTest {
     final PhoneNumberIdentifiers phoneNumberIdentifiers = mock(PhoneNumberIdentifiers.class);
     phoneNumberIdentifiersByE164 = new HashMap<>();
 
-    when(phoneNumberIdentifiers.getPhoneNumberIdentifier(anyString())).thenAnswer((Answer<UUID>) invocation -> {
+    when(phoneNumberIdentifiers.getPhoneNumberIdentifier(anyString())).thenAnswer((Answer<CompletableFuture<UUID>>) invocation -> {
       final String number = invocation.getArgument(0, String.class);
-      return phoneNumberIdentifiersByE164.computeIfAbsent(number, n -> UUID.randomUUID());
+      return CompletableFuture.completedFuture(phoneNumberIdentifiersByE164.computeIfAbsent(number, n -> UUID.randomUUID()));
     });
 
     @SuppressWarnings("unchecked") final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager =
@@ -212,9 +214,9 @@ class AccountsManagerTest {
       task.run();
 
       return null;
-    }).when(accountLockManager).withLock(any(), any(), any());
+    }).when(accountLockManager).withLock(anyList(), any(), any());
 
-    when(accountLockManager.withLockAsync(any(), any(), any())).thenAnswer(invocation -> {
+    when(accountLockManager.withLockAsync(anyList(), any(), any())).thenAnswer(invocation -> {
       final Supplier<CompletableFuture<?>> taskSupplier = invocation.getArgument(1);
       return taskSupplier.get();
     });
@@ -836,11 +838,17 @@ class AccountsManagerTest {
     verifyNoInteractions(profilesManager);
   }
 
-  @Test
-  void testReregisterAccount() throws InterruptedException, AccountAlreadyExistsException {
+  @ParameterizedTest
+  @CsvSource({
+      "+18005550123, +18005550123",
+      // the canonical form of numbers may change over time, so an existing account might have not-identical e164 that
+      // maps to the same PNI, and the number used by the caller must be present on the re-registered account
+      "+2290123456789, +22923456789"
+  })
+  void testReregisterAccount(final String e164, final String existingAccountE164)
+      throws InterruptedException, AccountAlreadyExistsException {
     final UUID existingUuid = UUID.randomUUID();
 
-    final String e164 = "+18005550123";
     final AccountAttributes attributes = new AccountAttributes(false, 1, 2, null, null, true, null);
 
     when(accounts.create(any(), any()))
@@ -850,7 +858,7 @@ class AccountsManagerTest {
           final Account existingAccount = mock(Account.class);
           when(existingAccount.getUuid()).thenReturn(existingUuid);
           when(existingAccount.getIdentifier(IdentityType.ACI)).thenReturn(existingUuid);
-          when(existingAccount.getNumber()).thenReturn(e164);
+          when(existingAccount.getNumber()).thenReturn(existingAccountE164);
           when(existingAccount.getPhoneNumberIdentifier()).thenReturn(requestedAccount.getIdentifier(IdentityType.PNI));
           when(existingAccount.getIdentifier(IdentityType.PNI)).thenReturn(requestedAccount.getIdentifier(IdentityType.PNI));
           when(existingAccount.getPrimaryDevice()).thenReturn(mock(Device.class));
@@ -863,6 +871,7 @@ class AccountsManagerTest {
     final Account reregisteredAccount = createAccount(e164, attributes);
 
     assertTrue(phoneNumberIdentifiersByE164.containsKey(e164));
+    assertEquals(e164, reregisteredAccount.getNumber());
 
     verify(accounts)
         .create(argThat(account -> e164.equals(account.getNumber()) && existingUuid.equals(account.getUuid())), any());
@@ -1053,9 +1062,26 @@ class AccountsManagerTest {
     final String number = "+14152222222";
 
     Account account = AccountsHelper.generateTestAccount(number, UUID.randomUUID(), UUID.randomUUID(), new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+    phoneNumberIdentifiersByE164.put(number, account.getPhoneNumberIdentifier());
     account = accountsManager.changeNumber(account, number, null, null, null, null);
 
     assertEquals(number, account.getNumber());
+    verify(keysManager, never()).deleteSingleUsePreKeys(any());
+  }
+
+  @Test
+  void testChangePhoneNumberDifferentNumberSamePni() throws InterruptedException, MismatchedDevicesException {
+    final String originalNumber = "+22923456789";
+    // the canonical form of numbers may change over time, so we use PNIs as stable identifiers
+    final String newNumber = "+2290123456789";
+
+    Account account = AccountsHelper.generateTestAccount(originalNumber, UUID.randomUUID(), UUID.randomUUID(),
+        new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+    phoneNumberIdentifiersByE164.put(originalNumber, account.getPhoneNumberIdentifier());
+    phoneNumberIdentifiersByE164.put(newNumber, account.getPhoneNumberIdentifier());
+    account = accountsManager.changeNumber(account, newNumber, null, null, null, null);
+
+    assertEquals(originalNumber, account.getNumber());
     verify(keysManager, never()).deleteSingleUsePreKeys(any());
   }
 
@@ -1064,6 +1090,7 @@ class AccountsManagerTest {
     final String number = "+14152222222";
 
     Account account = AccountsHelper.generateTestAccount(number, UUID.randomUUID(), UUID.randomUUID(), new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+    phoneNumberIdentifiersByE164.put(number, account.getPhoneNumberIdentifier());
     final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
     assertThrows(IllegalArgumentException.class,
         () -> accountsManager.changeNumber(

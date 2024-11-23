@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeast;
@@ -50,7 +51,6 @@ import org.whispersystems.textsecuregcm.auth.UnidentifiedAccessUtil;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
 import org.whispersystems.textsecuregcm.entities.AccountAttributes;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
-import org.whispersystems.textsecuregcm.push.WebSocketConnectionEventManager;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClient;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
 import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery2Client;
@@ -111,9 +111,9 @@ class AccountsManagerConcurrentModificationIntegrationTest {
         task.run();
 
         return null;
-      }).when(accountLockManager).withLock(any(), any(), any());
+      }).when(accountLockManager).withLock(anyList(), any(), any());
 
-      when(accountLockManager.withLockAsync(any(), any(), any())).thenAnswer(invocation -> {
+      when(accountLockManager.withLockAsync(anyList(), any(), any())).thenAnswer(invocation -> {
         final Supplier<CompletableFuture<?>> taskSupplier = invocation.getArgument(1);
         taskSupplier.get().join();
 
@@ -122,7 +122,7 @@ class AccountsManagerConcurrentModificationIntegrationTest {
 
       final PhoneNumberIdentifiers phoneNumberIdentifiers = mock(PhoneNumberIdentifiers.class);
       when(phoneNumberIdentifiers.getPhoneNumberIdentifier(anyString()))
-          .thenAnswer((Answer<UUID>) invocation -> UUID.randomUUID());
+          .thenAnswer((Answer<CompletableFuture<UUID>>) invocation -> CompletableFuture.completedFuture(UUID.randomUUID()));
 
       accountsManager = new AccountsManager(
           accounts,
