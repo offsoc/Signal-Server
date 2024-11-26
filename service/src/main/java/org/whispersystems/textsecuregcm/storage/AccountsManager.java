@@ -72,8 +72,8 @@ import org.whispersystems.textsecuregcm.entities.AccountAttributes;
 import org.whispersystems.textsecuregcm.entities.DeviceInfo;
 import org.whispersystems.textsecuregcm.entities.ECSignedPreKey;
 import org.whispersystems.textsecuregcm.entities.KEMSignedPreKey;
-import org.whispersystems.textsecuregcm.entities.RemoteAttachment;
 import org.whispersystems.textsecuregcm.entities.RestoreAccountRequest;
+import org.whispersystems.textsecuregcm.entities.TransferArchiveResult;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.identity.ServiceIdentifier;
 import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
@@ -90,6 +90,7 @@ import org.whispersystems.textsecuregcm.util.SystemMapper;
 import org.whispersystems.textsecuregcm.util.Util;
 import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Scheduler;
+import reactor.util.function.Tuple3;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
 
@@ -140,7 +141,7 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   private final Map<String, CompletableFuture<Optional<DeviceInfo>>> waitForDeviceFuturesByTokenIdentifier =
       new ConcurrentHashMap<>();
 
-  private final Map<TimestampedDeviceIdentifier, CompletableFuture<Optional<RemoteAttachment>>> waitForTransferArchiveFuturesByDeviceIdentifier =
+  private final Map<TimestampedDeviceIdentifier, CompletableFuture<Optional<TransferArchiveResult>>> waitForTransferArchiveFuturesByDeviceIdentifier =
       new ConcurrentHashMap<>();
 
   private final Map<String, CompletableFuture<Optional<RestoreAccountRequest>>> waitForRestoreAccountRequestFuturesByToken =
@@ -1216,6 +1217,19 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     return accounts.getAll(segments, scheduler);
   }
 
+  public Flux<Tuple3<String, UUID, Long>> getE164KeyedDeletedAccounts(final int segments, final Scheduler scheduler) {
+    return accounts.getE164KeyedDeletedAccounts(segments, scheduler);
+  }
+
+  public CompletableFuture<Boolean> migrateDeletedAccount(final String e164, final UUID aci, final long expiration) {
+    return phoneNumberIdentifiers.getPhoneNumberIdentifier(e164)
+        .thenCompose(
+            pni -> accountLockManager.withLockAsync(
+                List.of(pni),
+                () -> accounts.insertPniDeletedAccount(e164, pni, aci, expiration),
+                accountLockExecutor));
+  }
+
   public CompletableFuture<Void> delete(final Account account, final DeletionReason deletionReason) {
     final Timer.Sample sample = Timer.start();
 
@@ -1548,7 +1562,7 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     return LINKED_DEVICE_PREFIX + linkDeviceTokenIdentifier;
   }
 
-  public CompletableFuture<Optional<RemoteAttachment>> waitForTransferArchive(final Account account, final Device device, final Duration timeout) {
+  public CompletableFuture<Optional<TransferArchiveResult>> waitForTransferArchive(final Account account, final Device device, final Duration timeout) {
     final TimestampedDeviceIdentifier deviceIdentifier =
         new TimestampedDeviceIdentifier(account.getIdentifier(IdentityType.ACI),
             device.getId(),
@@ -1564,14 +1578,14 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   public CompletableFuture<Void> recordTransferArchiveUpload(final Account account,
       final byte destinationDeviceId,
       final Instant destinationDeviceCreationTimestamp,
-      final RemoteAttachment transferArchive) {
+      final TransferArchiveResult transferArchiveResult) {
 
     final String key = getTransferArchiveKey(account.getIdentifier(IdentityType.ACI),
         destinationDeviceId,
         destinationDeviceCreationTimestamp);
 
     try {
-      final String transferArchiveJson = SystemMapper.jsonMapper().writeValueAsString(transferArchive);
+      final String transferArchiveJson = SystemMapper.jsonMapper().writeValueAsString(transferArchiveResult);
 
       return pubSubRedisClient.withConnection(connection ->
               connection.async().set(key, transferArchiveJson, SetArgs.Builder.ex(RECENTLY_ADDED_TRANSFER_ARCHIVE_TTL)))
@@ -1583,9 +1597,9 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     }
   }
 
-  private void handleTransferArchiveAdded(final CompletableFuture<Optional<RemoteAttachment>> future, final String transferArchiveJson) {
+  private void handleTransferArchiveAdded(final CompletableFuture<Optional<TransferArchiveResult>> future, final String transferArchiveJson) {
     try {
-      future.complete(Optional.of(SystemMapper.jsonMapper().readValue(transferArchiveJson, RemoteAttachment.class)));
+      future.complete(Optional.of(SystemMapper.jsonMapper().readValue(transferArchiveJson, TransferArchiveResult.class)));
     } catch (final JsonProcessingException e) {
       logger.error("Could not parse transfer archive json", e);
       future.completeExceptionally(e);
