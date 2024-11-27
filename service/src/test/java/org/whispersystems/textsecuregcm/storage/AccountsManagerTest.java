@@ -224,7 +224,7 @@ class AccountsManagerTest {
     final RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager =
         mock(RegistrationRecoveryPasswordsManager.class);
 
-    when(registrationRecoveryPasswordsManager.removeForNumber(anyString())).thenReturn(CompletableFuture.completedFuture(null));
+    when(registrationRecoveryPasswordsManager.remove(any())).thenReturn(CompletableFuture.completedFuture(null));
 
     when(keysManager.deleteSingleUsePreKeys(any())).thenReturn(CompletableFuture.completedFuture(null));
     when(messagesManager.clear(any())).thenReturn(CompletableFuture.completedFuture(null));
@@ -896,7 +896,7 @@ class AccountsManagerTest {
   void testCreateAccountRecentlyDeleted() throws InterruptedException, AccountAlreadyExistsException {
     final UUID recentlyDeletedUuid = UUID.randomUUID();
 
-    when(accounts.findRecentlyDeletedAccountIdentifier(anyString())).thenReturn(Optional.of(recentlyDeletedUuid));
+    when(accounts.findRecentlyDeletedAccountIdentifier(any())).thenReturn(Optional.of(recentlyDeletedUuid));
     when(accounts.create(any(), any())).thenReturn(true);
 
     final String e164 = "+18005550123";

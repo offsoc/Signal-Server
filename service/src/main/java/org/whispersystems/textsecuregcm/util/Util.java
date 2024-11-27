@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -24,6 +25,8 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.random.RandomGenerator;
+import java.util.stream.Collectors;
+
 import org.apache.commons.lang3.StringUtils;
 
 public class Util {
@@ -99,6 +102,117 @@ public class Util {
     } catch (final NumberParseException e) {
       return "ZZ";
     }
+  }
+
+  /**
+   * Returns a list of equivalent phone numbers to the given phone number. This is useful in cases where a numbering
+   * authority has changed the numbering format for a region or in cases where multiple formats of a number may be valid
+   * in different circumstances. Numbers are considered equivalent if a call/message sent to each number will generally
+   * arrive at the same device.
+   *
+   * @apiNote This method is intended to support number format transitions in cases where we do not already have
+   * multiple accounts registered with different forms of the same number. As a result, this method does not cover all
+   * possible cases of equivalent formats, but instead focuses on the cases where we can and choose to prevent multiple
+   * accounts from using different formats of the same number.
+   *
+   * @param number the e164-formatted phone number for which to find equivalent forms
+   *
+   * @return a list of phone numbers equivalent to the given phone number, including the given number. The given number
+   * will always be the first element of the list.
+   */
+  public static List<String> getAlternateForms(final String number) {
+    try {
+      final PhoneNumber phoneNumber = PHONE_NUMBER_UTIL.parse(number, null);
+
+      // Benin is changing phone number formats from +229 XXXXXXXX to +229 01XXXXXXXX starting on November 30, 2024
+      if ("BJ".equals(PHONE_NUMBER_UTIL.getRegionCodeForNumber(phoneNumber))) {
+        final String nationalSignificantNumber = PHONE_NUMBER_UTIL.getNationalSignificantNumber(phoneNumber);
+        final String alternateE164;
+
+        if (nationalSignificantNumber.length() == 10) {
+          // This is a new-format number; we can get the old-format version by stripping the leading "01" from the
+          // national number
+          alternateE164 = "+229" + StringUtils.removeStart(nationalSignificantNumber, "01");
+        } else {
+          // This is an old-format number; we can get the new-format version by adding a "01" prefix to the national
+          // number
+          alternateE164 = "+22901" + nationalSignificantNumber;
+        }
+
+        return List.of(number, alternateE164);
+      }
+
+      return List.of(number);
+    } catch (final NumberParseException e) {
+      return List.of(number);
+    }
+  }
+
+  /**
+   * Returns the preferred form of an e164 from a list of equivalents. Only use this when there is no other reason (such
+   * as the form specifically provided by a user) to prefer a particular form and we want to reduce nondeterminism.
+   *
+   * @apiNote This method is intended to support number format transitions in cases where we do not already have
+   * multiple accounts registered with different forms of the same number. As a result, this method does not cover all
+   * possible cases of equivalent formats, but instead focuses on the cases where we can and choose to prevent multiple
+   * accounts from using different formats of the same number.
+   *
+   * @param e164s a list of equivalent forms of a single phone number
+   *
+   * @return a single preferred canonical form for the number
+   */
+  public static Optional<String> getCanonicalNumber(List<String> e164s) {
+    if (e164s.size() <= 1) {
+      return e164s.stream().findFirst();
+    }
+    try {
+      final List<PhoneNumber> phoneNumbers = new ArrayList<>(e164s.size());
+      for (String e164 : e164s) {
+        phoneNumbers.add(PHONE_NUMBER_UTIL.parse(e164, null));
+      }
+      final Set<String> regions = phoneNumbers.stream().map(PHONE_NUMBER_UTIL::getRegionCodeForNumber).collect(Collectors.toSet());
+      if (regions.size() != 1) {
+        throw new IllegalArgumentException("Numbers from different countries cannot be equivalent alternate forms");
+      }
+      if (regions.contains("BJ")) {
+        // Benin is changing phone number formats from +229 XXXXXXXX to +229 01XXXXXXXX starting on November 30, 2024
+        // We prefer the longest form for long-term stability
+        return e164s.stream().sorted(Comparator.comparingInt(String::length).reversed()).findFirst();
+      }
+      // No matching country; fall back to something that's at least stable
+      return e164s.stream().sorted().findFirst();
+    } catch (final NumberParseException e) {
+      return e164s.stream().sorted().findFirst();
+    }
+  }
+
+  /**
+   * Tests whether the decimal form of the given number (without leading zeroes) begins with the decimal form of the
+   * given prefix (without leading zeroes).
+   *
+   * @param number the number to check for the given prefix
+   * @param prefix the prefix
+   *
+   * @return {@code true} if the given number starts with the given prefix or {@code false} otherwise
+   *
+   * @throws IllegalArgumentException if {@code number} is negative or if {@code prefix} is zero or negative
+   */
+  public static boolean startsWithDecimal(final long number, final long prefix) {
+    if (number < 0) {
+      throw new IllegalArgumentException("Number must be non-negative");
+    }
+
+    if (prefix <= 0) {
+      throw new IllegalArgumentException("Prefix must be positive");
+    }
+
+    long workingCopy = number;
+
+    while (workingCopy > prefix) {
+      workingCopy /= 10;
+    }
+
+    return workingCopy == prefix;
   }
 
   public static byte[] truncate(byte[] element, int length) {

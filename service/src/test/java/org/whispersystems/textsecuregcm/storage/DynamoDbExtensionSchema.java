@@ -75,11 +75,11 @@ public final class DynamoDbExtensionSchema {
         List.of()),
 
     DELETED_ACCOUNTS("deleted_accounts_test",
-        Accounts.DELETED_ACCOUNTS_KEY_ACCOUNT_E164,
+        Accounts.DELETED_ACCOUNTS_KEY_ACCOUNT_PNI,
         null,
         List.of(
             AttributeDefinition.builder()
-                .attributeName(Accounts.DELETED_ACCOUNTS_KEY_ACCOUNT_E164)
+                .attributeName(Accounts.DELETED_ACCOUNTS_KEY_ACCOUNT_PNI)
                 .attributeType(ScalarAttributeType.S).build(),
             AttributeDefinition.builder()
                 .attributeName(Accounts.DELETED_ACCOUNTS_ATTR_ACCOUNT_UUID)
@@ -87,7 +87,7 @@ public final class DynamoDbExtensionSchema {
                 .build()),
         List.of(
             GlobalSecondaryIndex.builder()
-                .indexName(Accounts.DELETED_ACCOUNTS_UUID_TO_E164_INDEX_NAME)
+                .indexName(Accounts.DELETED_ACCOUNTS_UUID_TO_PNI_INDEX_NAME)
                 .keySchema(
                     KeySchemaElement.builder().attributeName(Accounts.DELETED_ACCOUNTS_ATTR_ACCOUNT_UUID).keyType(KeyType.HASH).build()
                 )
@@ -288,10 +288,10 @@ public final class DynamoDbExtensionSchema {
         List.of(), List.of()),
 
     REGISTRATION_RECOVERY_PASSWORDS("registration_recovery_passwords_test",
-        RegistrationRecoveryPasswords.KEY_E164,
+        RegistrationRecoveryPasswords.KEY_PNI,
         null,
         List.of(AttributeDefinition.builder()
-            .attributeName(RegistrationRecoveryPasswords.KEY_E164)
+            .attributeName(RegistrationRecoveryPasswords.KEY_PNI)
             .attributeType(ScalarAttributeType.S)
             .build()),
         List.of(), List.of()),

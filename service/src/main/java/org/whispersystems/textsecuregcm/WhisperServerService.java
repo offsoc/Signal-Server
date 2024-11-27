@@ -256,14 +256,14 @@ import org.whispersystems.textsecuregcm.util.logging.UncaughtExceptionHandler;
 import org.whispersystems.textsecuregcm.websocket.AuthenticatedConnectListener;
 import org.whispersystems.textsecuregcm.websocket.ProvisioningConnectListener;
 import org.whispersystems.textsecuregcm.websocket.WebSocketAccountAuthenticator;
+import org.whispersystems.textsecuregcm.workers.BackfillBeninPhoneNumberFormsCommand;
 import org.whispersystems.textsecuregcm.workers.BackupMetricsCommand;
 import org.whispersystems.textsecuregcm.workers.CertificateCommand;
 import org.whispersystems.textsecuregcm.workers.CheckDynamicConfigurationCommand;
+import org.whispersystems.textsecuregcm.workers.DeleteE164RegistrationRecoveryPasswordsCommand;
 import org.whispersystems.textsecuregcm.workers.DeleteUserCommand;
 import org.whispersystems.textsecuregcm.workers.IdleDeviceNotificationSchedulerFactory;
 import org.whispersystems.textsecuregcm.workers.MessagePersisterServiceCommand;
-import org.whispersystems.textsecuregcm.workers.MigrateDeletedAccountsCommand;
-import org.whispersystems.textsecuregcm.workers.MigrateRegistrationRecoveryPasswordsCommand;
 import org.whispersystems.textsecuregcm.workers.NotifyIdleDevicesCommand;
 import org.whispersystems.textsecuregcm.workers.ProcessScheduledJobsServiceCommand;
 import org.whispersystems.textsecuregcm.workers.RemoveExpiredAccountsCommand;
@@ -332,8 +332,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         "Processes scheduled jobs to send notifications to idle devices",
         new IdleDeviceNotificationSchedulerFactory()));
 
-    bootstrap.addCommand(new MigrateDeletedAccountsCommand());
-    bootstrap.addCommand(new MigrateRegistrationRecoveryPasswordsCommand());
+    bootstrap.addCommand(new DeleteE164RegistrationRecoveryPasswordsCommand());
+    bootstrap.addCommand(new BackfillBeninPhoneNumberFormsCommand());
   }
 
   @Override
@@ -588,7 +588,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     ExperimentEnrollmentManager experimentEnrollmentManager = new ExperimentEnrollmentManager(
         dynamicConfigurationManager);
     RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager =
-        new RegistrationRecoveryPasswordsManager(registrationRecoveryPasswords, phoneNumberIdentifiers);
+        new RegistrationRecoveryPasswordsManager(registrationRecoveryPasswords);
     UsernameHashZkProofVerifier usernameHashZkProofVerifier = new UsernameHashZkProofVerifier();
 
     RegistrationServiceClient registrationServiceClient = config.getRegistrationServiceConfiguration()
@@ -1078,7 +1078,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
 
 
     final PhoneVerificationTokenManager phoneVerificationTokenManager = new PhoneVerificationTokenManager(
-        registrationServiceClient, registrationRecoveryPasswordsManager, registrationRecoveryChecker);
+        phoneNumberIdentifiers, registrationServiceClient, registrationRecoveryPasswordsManager, registrationRecoveryChecker);
     final List<Object> commonControllers = Lists.newArrayList(
         new AccountController(accountsManager, rateLimiters, turnTokenGenerator, registrationRecoveryPasswordsManager,
             usernameHashZkProofVerifier),
@@ -1102,8 +1102,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new KeysController(rateLimiters, keysManager, accountsManager, zkSecretParams, Clock.systemUTC()),
         new KeyTransparencyController(keyTransparencyServiceClient),
         new MessageController(rateLimiters, messageByteLimitCardinalityEstimator, messageSender, receiptSender,
-            accountsManager, messagesManager, pushNotificationManager, pushNotificationScheduler, reportMessageManager,
-            multiRecipientMessageExecutor, messageDeliveryScheduler, clientReleaseManager,
+            accountsManager, messagesManager, phoneNumberIdentifiers, pushNotificationManager, pushNotificationScheduler,
+            reportMessageManager, multiRecipientMessageExecutor, messageDeliveryScheduler, clientReleaseManager,
             dynamicConfigurationManager, zkSecretParams, spamChecker, messageMetrics, messageDeliveryLoopMonitor,
             Clock.systemUTC()),
         new PaymentsController(currencyManager, paymentsCredentialsGenerator),
@@ -1121,8 +1121,9 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
             config.getCdnConfiguration().credentials().secretAccessKey().value(), config.getCdnConfiguration().region(),
             config.getCdnConfiguration().bucket()),
         new VerificationController(registrationServiceClient, new VerificationSessionManager(verificationSessions),
-            pushNotificationManager, registrationCaptchaManager, registrationRecoveryPasswordsManager, rateLimiters,
-            accountsManager, registrationFraudChecker, dynamicConfigurationManager, clock)
+            pushNotificationManager, registrationCaptchaManager, registrationRecoveryPasswordsManager,
+            phoneNumberIdentifiers, rateLimiters, accountsManager, registrationFraudChecker,
+            dynamicConfigurationManager, clock)
     );
     if (config.getSubscription() != null && config.getOneTimeDonations() != null) {
       SubscriptionManager subscriptionManager = new SubscriptionManager(subscriptions,

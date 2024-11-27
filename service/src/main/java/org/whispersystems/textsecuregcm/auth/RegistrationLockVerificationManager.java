@@ -23,6 +23,7 @@ import org.whispersystems.textsecuregcm.controllers.RateLimitExceededException;
 import org.whispersystems.textsecuregcm.entities.PhoneVerificationRequest;
 import org.whispersystems.textsecuregcm.entities.RegistrationLockFailure;
 import org.whispersystems.textsecuregcm.entities.Svr3Credentials;
+import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.limits.RateLimiters;
 import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
 import org.whispersystems.textsecuregcm.push.NotPushRegisteredException;
@@ -156,7 +157,7 @@ public class RegistrationLockVerificationManager {
       // This allows users to re-register via registration recovery password
       // instead of always being forced to fall back to SMS verification.
       if (!phoneVerificationType.equals(PhoneVerificationRequest.VerificationType.RECOVERY_PASSWORD) || clientRegistrationLock != null) {
-        registrationRecoveryPasswordsManager.removeForNumber(updatedAccount.getNumber());
+        registrationRecoveryPasswordsManager.remove(updatedAccount.getIdentifier(IdentityType.PNI));
       }
 
       final List<Byte> deviceIds = updatedAccount.getDevices().stream().map(Device::getId).toList();

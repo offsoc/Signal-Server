@@ -9,44 +9,42 @@ import io.dropwizard.core.Application;
 import io.dropwizard.core.setup.Environment;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
+import java.time.Duration;
 import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.inf.Subparser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.WhisperServerConfiguration;
-import org.whispersystems.textsecuregcm.auth.SaltedTokenHash;
 import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
 import org.whispersystems.textsecuregcm.storage.RegistrationRecoveryPasswordsManager;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import reactor.util.retry.Retry;
-import java.time.Duration;
 
-public class MigrateRegistrationRecoveryPasswordsCommand extends AbstractCommandWithDependencies {
-
-  private static final int DEFAULT_MAX_CONCURRENCY = 16;
+public class DeleteE164RegistrationRecoveryPasswordsCommand extends AbstractCommandWithDependencies {
 
   private static final String DRY_RUN_ARGUMENT = "dry-run";
   private static final String MAX_CONCURRENCY_ARGUMENT = "max-concurrency";
   private static final String SEGMENTS_ARGUMENT = "segments";
+  private static final String BUFFER_ARGUMENT = "buffer";
 
   private static final String RECORDS_INSPECTED_COUNTER_NAME =
-      MetricsUtil.name(MigrateRegistrationRecoveryPasswordsCommand.class, "recordsInspected");
+      MetricsUtil.name(DeleteE164RegistrationRecoveryPasswordsCommand.class, "recordsInspected");
 
-  private static final String RECORDS_MIGRATED_COUNTER_NAME =
-      MetricsUtil.name(MigrateRegistrationRecoveryPasswordsCommand.class, "recordsMigrated");
+  private static final String RECORDS_DELETED_COUNTER_NAME =
+      MetricsUtil.name(DeleteE164RegistrationRecoveryPasswordsCommand.class, "recordsDeleted");
 
   private static final String DRY_RUN_TAG = "dryRun";
 
-  private static final Logger logger = LoggerFactory.getLogger(MigrateRegistrationRecoveryPasswordsCommand.class);
+  private static final Logger logger = LoggerFactory.getLogger(DeleteE164RegistrationRecoveryPasswordsCommand.class);
 
-  public MigrateRegistrationRecoveryPasswordsCommand() {
+  public DeleteE164RegistrationRecoveryPasswordsCommand() {
 
     super(new Application<>() {
       @Override
       public void run(final WhisperServerConfiguration configuration, final Environment environment) {
       }
-    }, "migrate-registration-recovery-passwords", "Migrate e164-based registration recovery passwords to PNI-based records");
+    }, "delete-e164-registration-recovery-passwords", "Delete e164-associated registration recovery passwords");
   }
 
   @Override
@@ -58,12 +56,12 @@ public class MigrateRegistrationRecoveryPasswordsCommand extends AbstractCommand
         .dest(DRY_RUN_ARGUMENT)
         .required(false)
         .setDefault(true)
-        .help("If true, don’t actually modify accounts with expired linked devices");
+        .help("If true, don’t actually delete any registration recovery passwords");
 
     subparser.addArgument("--max-concurrency")
         .type(Integer.class)
         .dest(MAX_CONCURRENCY_ARGUMENT)
-        .setDefault(DEFAULT_MAX_CONCURRENCY)
+        .setDefault(16)
         .help("Max concurrency for DynamoDB operations");
 
     subparser.addArgument("--segments")
@@ -72,6 +70,12 @@ public class MigrateRegistrationRecoveryPasswordsCommand extends AbstractCommand
         .required(false)
         .setDefault(1)
         .help("The total number of segments for a DynamoDB scan");
+
+    subparser.addArgument("--buffer")
+        .type(Integer.class)
+        .dest(BUFFER_ARGUMENT)
+        .setDefault(16_384)
+        .help("Records to buffer");
   }
 
   @Override
@@ -81,34 +85,31 @@ public class MigrateRegistrationRecoveryPasswordsCommand extends AbstractCommand
     final boolean dryRun = namespace.getBoolean(DRY_RUN_ARGUMENT);
     final int maxConcurrency = namespace.getInt(MAX_CONCURRENCY_ARGUMENT);
     final int segments = namespace.getInt(SEGMENTS_ARGUMENT);
+    final int bufferSize = namespace.getInt(BUFFER_ARGUMENT);
 
     final Counter recordsInspectedCounter =
         Metrics.counter(RECORDS_INSPECTED_COUNTER_NAME, DRY_RUN_TAG, String.valueOf(dryRun));
 
-    final Counter recordsMigratedCounter =
-        Metrics.counter(RECORDS_MIGRATED_COUNTER_NAME, DRY_RUN_TAG, String.valueOf(dryRun));
+    final Counter recordsDeletedCounter =
+        Metrics.counter(RECORDS_DELETED_COUNTER_NAME, DRY_RUN_TAG, String.valueOf(dryRun));
 
     final RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager =
         commandDependencies.registrationRecoveryPasswordsManager();
 
-    registrationRecoveryPasswordsManager.getE164AssociatedRegistrationRecoveryPasswords(segments, Schedulers.parallel())
-        .doOnNext(tuple -> recordsInspectedCounter.increment())
-        .flatMap(tuple -> {
-          final String e164 = tuple.getT1();
-          final SaltedTokenHash saltedTokenHash = tuple.getT2();
-          final long expiration = tuple.getT3();
-
-          return dryRun
-              ? Mono.just(false)
-              : Mono.fromFuture(() -> registrationRecoveryPasswordsManager.migrateE164Record(e164, saltedTokenHash, expiration))
+    registrationRecoveryPasswordsManager.getE164sWithRegistrationRecoveryPasswords(segments, bufferSize, Schedulers.parallel())
+        .doOnNext(e164 -> recordsInspectedCounter.increment())
+        .flatMap(e164 -> {
+          final Mono<Void> deleteMono = dryRun
+              ? Mono.empty()
+              : Mono.fromFuture(() -> registrationRecoveryPasswordsManager.removeForE164(e164))
                   .retryWhen(Retry.backoff(3, Duration.ofSeconds(1)))
                   .onErrorResume(throwable -> {
-                        logger.warn("Failed to migrate record for {}", e164, throwable);
-                        return Mono.empty();
-                      });
+                    logger.warn("Failed to migrate record for {}", e164, throwable);
+                    return Mono.empty();
+                  });
+
+          return deleteMono.doOnSuccess(ignored -> recordsDeletedCounter.increment());
         }, maxConcurrency)
-        .filter(migrated -> migrated)
-        .doOnNext(ignored -> recordsMigratedCounter.increment())
         .then()
         .block();
   }

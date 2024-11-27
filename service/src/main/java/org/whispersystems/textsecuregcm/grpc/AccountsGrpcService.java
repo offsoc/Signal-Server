@@ -47,6 +47,7 @@ import org.whispersystems.textsecuregcm.auth.grpc.AuthenticationUtil;
 import org.whispersystems.textsecuregcm.controllers.AccountController;
 import org.whispersystems.textsecuregcm.entities.EncryptedUsername;
 import org.whispersystems.textsecuregcm.identity.AciServiceIdentifier;
+import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.identity.PniServiceIdentifier;
 import org.whispersystems.textsecuregcm.limits.RateLimiters;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
@@ -336,7 +337,7 @@ public class AccountsGrpcService extends ReactorAccountsGrpc.AccountsImplBase {
 
     return Mono.fromFuture(() -> accountsManager.getByAccountIdentifierAsync(authenticatedDevice.accountIdentifier()))
         .map(maybeAccount -> maybeAccount.orElseThrow(Status.UNAUTHENTICATED::asRuntimeException))
-        .flatMap(account -> Mono.fromFuture(() -> registrationRecoveryPasswordsManager.storeForCurrentNumber(account.getNumber(), request.getRegistrationRecoveryPassword().toByteArray())))
+        .flatMap(account -> Mono.fromFuture(() -> registrationRecoveryPasswordsManager.store(account.getIdentifier(IdentityType.PNI), request.getRegistrationRecoveryPassword().toByteArray())))
         .thenReturn(SetRegistrationRecoveryPasswordResponse.newBuilder().build());
   }
 }
