@@ -9,19 +9,23 @@ import io.dropwizard.core.Application;
 import io.dropwizard.core.setup.Environment;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
-import java.time.Duration;
 import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.inf.Subparser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.WhisperServerConfiguration;
 import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
-import org.whispersystems.textsecuregcm.storage.RegistrationRecoveryPasswordsManager;
+import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import reactor.util.retry.Retry;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.function.Function;
 
-public class DeleteE164RegistrationRecoveryPasswordsCommand extends AbstractCommandWithDependencies {
+public class RemoveE164RecentlyDeletedAccountsCommand extends AbstractCommandWithDependencies {
 
   private static final String DRY_RUN_ARGUMENT = "dry-run";
   private static final String MAX_CONCURRENCY_ARGUMENT = "max-concurrency";
@@ -29,22 +33,22 @@ public class DeleteE164RegistrationRecoveryPasswordsCommand extends AbstractComm
   private static final String BUFFER_ARGUMENT = "buffer";
 
   private static final String RECORDS_INSPECTED_COUNTER_NAME =
-      MetricsUtil.name(DeleteE164RegistrationRecoveryPasswordsCommand.class, "recordsInspected");
+      MetricsUtil.name(RemoveE164RecentlyDeletedAccountsCommand.class, "recordsInspected");
 
   private static final String RECORDS_DELETED_COUNTER_NAME =
-      MetricsUtil.name(DeleteE164RegistrationRecoveryPasswordsCommand.class, "recordsDeleted");
+      MetricsUtil.name(RemoveE164RecentlyDeletedAccountsCommand.class, "recordsDeleted");
 
   private static final String DRY_RUN_TAG = "dryRun";
 
-  private static final Logger logger = LoggerFactory.getLogger(DeleteE164RegistrationRecoveryPasswordsCommand.class);
+  private static final Logger logger = LoggerFactory.getLogger(RemoveE164RecentlyDeletedAccountsCommand.class);
 
-  public DeleteE164RegistrationRecoveryPasswordsCommand() {
+  public RemoveE164RecentlyDeletedAccountsCommand() {
 
     super(new Application<>() {
       @Override
       public void run(final WhisperServerConfiguration configuration, final Environment environment) {
       }
-    }, "delete-e164-registration-recovery-passwords", "Delete e164-associated registration recovery passwords");
+    }, "remove-e164-recently-deleted-accounts", "Delete e164-associated recently-deleted account records");
   }
 
   @Override
@@ -93,18 +97,25 @@ public class DeleteE164RegistrationRecoveryPasswordsCommand extends AbstractComm
     final Counter recordsDeletedCounter =
         Metrics.counter(RECORDS_DELETED_COUNTER_NAME, DRY_RUN_TAG, String.valueOf(dryRun));
 
-    final RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager =
-        commandDependencies.registrationRecoveryPasswordsManager();
+    final AccountsManager accountsManager = commandDependencies.accountsManager();
 
-    registrationRecoveryPasswordsManager.getE164sWithRegistrationRecoveryPasswords(segments, bufferSize, Schedulers.parallel())
+    accountsManager.getE164sForRecentlyDeletedAccounts(segments, Schedulers.parallel())
+        .buffer(bufferSize)
+        .map(source -> {
+          final List<String> shuffled = new ArrayList<>(source);
+          Collections.shuffle(shuffled);
+          return shuffled;
+        })
+        .limitRate(2)
+        .flatMapIterable(Function.identity())
         .doOnNext(e164 -> recordsInspectedCounter.increment())
         .flatMap(e164 -> {
           final Mono<Void> deleteMono = dryRun
               ? Mono.empty()
-              : Mono.fromFuture(() -> registrationRecoveryPasswordsManager.removeForE164(e164))
+              : Mono.fromFuture(() -> accountsManager.removeRecentlyDeletedAccountRecord(e164))
                   .retryWhen(Retry.backoff(3, Duration.ofSeconds(1)))
                   .onErrorResume(throwable -> {
-                    logger.warn("Failed to migrate record for {}", e164, throwable);
+                    logger.warn("Failed to remove recently-deleted account record for {}", e164, throwable);
                     return Mono.empty();
                   });
 

@@ -256,16 +256,15 @@ import org.whispersystems.textsecuregcm.util.logging.UncaughtExceptionHandler;
 import org.whispersystems.textsecuregcm.websocket.AuthenticatedConnectListener;
 import org.whispersystems.textsecuregcm.websocket.ProvisioningConnectListener;
 import org.whispersystems.textsecuregcm.websocket.WebSocketAccountAuthenticator;
-import org.whispersystems.textsecuregcm.workers.BackfillBeninPhoneNumberFormsCommand;
 import org.whispersystems.textsecuregcm.workers.BackupMetricsCommand;
 import org.whispersystems.textsecuregcm.workers.CertificateCommand;
 import org.whispersystems.textsecuregcm.workers.CheckDynamicConfigurationCommand;
-import org.whispersystems.textsecuregcm.workers.DeleteE164RegistrationRecoveryPasswordsCommand;
 import org.whispersystems.textsecuregcm.workers.DeleteUserCommand;
 import org.whispersystems.textsecuregcm.workers.IdleDeviceNotificationSchedulerFactory;
 import org.whispersystems.textsecuregcm.workers.MessagePersisterServiceCommand;
 import org.whispersystems.textsecuregcm.workers.NotifyIdleDevicesCommand;
 import org.whispersystems.textsecuregcm.workers.ProcessScheduledJobsServiceCommand;
+import org.whispersystems.textsecuregcm.workers.RemoveE164RecentlyDeletedAccountsCommand;
 import org.whispersystems.textsecuregcm.workers.RemoveExpiredAccountsCommand;
 import org.whispersystems.textsecuregcm.workers.RemoveExpiredBackupsCommand;
 import org.whispersystems.textsecuregcm.workers.RemoveExpiredLinkedDevicesCommand;
@@ -332,8 +331,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         "Processes scheduled jobs to send notifications to idle devices",
         new IdleDeviceNotificationSchedulerFactory()));
 
-    bootstrap.addCommand(new DeleteE164RegistrationRecoveryPasswordsCommand());
-    bootstrap.addCommand(new BackfillBeninPhoneNumberFormsCommand());
+    bootstrap.addCommand(new RemoveE164RecentlyDeletedAccountsCommand());
   }
 
   @Override
