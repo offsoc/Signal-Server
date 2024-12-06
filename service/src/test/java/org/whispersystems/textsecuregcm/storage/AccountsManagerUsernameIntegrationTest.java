@@ -41,6 +41,7 @@ import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClient;
 import org.whispersystems.textsecuregcm.redis.RedisClusterExtension;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
 import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery2Client;
+import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery3Client;
 import org.whispersystems.textsecuregcm.storage.DynamoDbExtensionSchema.Tables;
 import org.whispersystems.textsecuregcm.tests.util.AccountsHelper;
 import org.whispersystems.textsecuregcm.util.AttributeValues;
@@ -102,6 +103,7 @@ class AccountsManagerUsernameIntegrationTest {
     );
 
     accounts = Mockito.spy(new Accounts(
+        Clock.systemUTC(),
         DYNAMO_DB_EXTENSION.getDynamoDbClient(),
         DYNAMO_DB_EXTENSION.getDynamoDbAsyncClient(),
         Tables.ACCOUNTS.tableName(),
@@ -149,6 +151,7 @@ class AccountsManagerUsernameIntegrationTest {
         profileManager,
         mock(SecureStorageClient.class),
         mock(SecureValueRecovery2Client.class),
+        mock(SecureValueRecovery3Client.class),
         disconnectionRequestManager,
         mock(RegistrationRecoveryPasswordsManager.class),
         mock(ClientPublicKeysManager.class),

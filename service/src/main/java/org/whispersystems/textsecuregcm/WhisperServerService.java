@@ -8,6 +8,7 @@ import static com.codahale.metrics.MetricRegistry.name;
 import static java.util.Objects.requireNonNull;
 
 import com.google.common.collect.Lists;
+import com.webauthn4j.appattest.DeviceCheckManager;
 import io.dropwizard.auth.AuthDynamicFeature;
 import io.dropwizard.auth.AuthFilter;
 import io.dropwizard.auth.AuthValueFactoryProvider;
@@ -114,6 +115,7 @@ import org.whispersystems.textsecuregcm.controllers.CallRoutingController;
 import org.whispersystems.textsecuregcm.controllers.CallRoutingControllerV2;
 import org.whispersystems.textsecuregcm.controllers.CertificateController;
 import org.whispersystems.textsecuregcm.controllers.ChallengeController;
+import org.whispersystems.textsecuregcm.controllers.DeviceCheckController;
 import org.whispersystems.textsecuregcm.controllers.DeviceController;
 import org.whispersystems.textsecuregcm.controllers.DirectoryV2Controller;
 import org.whispersystems.textsecuregcm.controllers.DonationController;
@@ -204,6 +206,7 @@ import org.whispersystems.textsecuregcm.s3.PolicySigner;
 import org.whispersystems.textsecuregcm.s3.PostPolicyGenerator;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
 import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery2Client;
+import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery3Client;
 import org.whispersystems.textsecuregcm.spam.ChallengeConstraintChecker;
 import org.whispersystems.textsecuregcm.spam.RegistrationFraudChecker;
 import org.whispersystems.textsecuregcm.spam.RegistrationRecoveryChecker;
@@ -213,6 +216,9 @@ import org.whispersystems.textsecuregcm.storage.AccountLockManager;
 import org.whispersystems.textsecuregcm.storage.AccountPrincipalSupplier;
 import org.whispersystems.textsecuregcm.storage.Accounts;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
+import org.whispersystems.textsecuregcm.storage.devicecheck.AppleDeviceCheckManager;
+import org.whispersystems.textsecuregcm.storage.devicecheck.AppleDeviceCheckTrustAnchor;
+import org.whispersystems.textsecuregcm.storage.devicecheck.AppleDeviceChecks;
 import org.whispersystems.textsecuregcm.storage.ChangeNumberManager;
 import org.whispersystems.textsecuregcm.storage.ClientPublicKeys;
 import org.whispersystems.textsecuregcm.storage.ClientPublicKeysManager;
@@ -264,7 +270,6 @@ import org.whispersystems.textsecuregcm.workers.IdleDeviceNotificationSchedulerF
 import org.whispersystems.textsecuregcm.workers.MessagePersisterServiceCommand;
 import org.whispersystems.textsecuregcm.workers.NotifyIdleDevicesCommand;
 import org.whispersystems.textsecuregcm.workers.ProcessScheduledJobsServiceCommand;
-import org.whispersystems.textsecuregcm.workers.RemoveE164RecentlyDeletedAccountsCommand;
 import org.whispersystems.textsecuregcm.workers.RemoveExpiredAccountsCommand;
 import org.whispersystems.textsecuregcm.workers.RemoveExpiredBackupsCommand;
 import org.whispersystems.textsecuregcm.workers.RemoveExpiredLinkedDevicesCommand;
@@ -330,8 +335,6 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     bootstrap.addCommand(new ProcessScheduledJobsServiceCommand("process-idle-device-notification-jobs",
         "Processes scheduled jobs to send notifications to idle devices",
         new IdleDeviceNotificationSchedulerFactory()));
-
-    bootstrap.addCommand(new RemoveE164RecentlyDeletedAccountsCommand());
   }
 
   @Override
@@ -397,6 +400,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         .workQueue(messageDeletionQueue).build();
 
     Accounts accounts = new Accounts(
+        clock,
         dynamoDbClient,
         dynamoDbAsyncClient,
         config.getDynamoDbTables().getAccounts().getTableName(),
@@ -475,8 +479,10 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         .maxThreads(1).minThreads(1).build();
     ExecutorService fcmSenderExecutor = environment.lifecycle().executorService(name(getClass(), "fcmSender-%d"))
         .maxThreads(32).minThreads(32).workQueue(fcmSenderQueue).build();
-    ExecutorService secureValueRecoveryServiceExecutor = environment.lifecycle()
-        .executorService(name(getClass(), "secureValueRecoveryService-%d")).maxThreads(1).minThreads(1).build();
+    ExecutorService secureValueRecovery2ServiceExecutor = environment.lifecycle()
+        .executorService(name(getClass(), "secureValueRecoveryService2-%d")).maxThreads(1).minThreads(1).build();
+    ExecutorService secureValueRecovery3ServiceExecutor = environment.lifecycle()
+        .executorService(name(getClass(), "secureValueRecoveryService3-%d")).maxThreads(1).minThreads(1).build();
     ExecutorService storageServiceExecutor = environment.lifecycle()
         .executorService(name(getClass(), "storageService-%d")).maxThreads(1).minThreads(1).build();
     ExecutorService virtualThreadEventLoggerExecutor = environment.lifecycle()
@@ -599,7 +605,9 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         config.getKeyTransparencyServiceConfiguration().clientPrivateKey().value(),
         keyTransparencyCallbackExecutor);
     SecureValueRecovery2Client secureValueRecovery2Client = new SecureValueRecovery2Client(svr2CredentialsGenerator,
-        secureValueRecoveryServiceExecutor, secureValueRecoveryServiceRetryExecutor, config.getSvr2Configuration());
+        secureValueRecovery2ServiceExecutor, secureValueRecoveryServiceRetryExecutor, config.getSvr2Configuration());
+    SecureValueRecovery3Client secureValueRecovery3Client = new SecureValueRecovery3Client(svr3CredentialsGenerator,
+        secureValueRecovery3ServiceExecutor, secureValueRecoveryServiceRetryExecutor, config.getSvr3Configuration());
     SecureStorageClient secureStorageClient = new SecureStorageClient(storageCredentialsGenerator,
         storageServiceExecutor, storageServiceRetryExecutor, config.getSecureStorageServiceConfiguration());
     DisconnectionRequestManager disconnectionRequestManager = new DisconnectionRequestManager(pubsubClient, disconnectionRequestListenerExecutor);
@@ -620,7 +628,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new ClientPublicKeysManager(clientPublicKeys, accountLockManager, accountLockExecutor);
     AccountsManager accountsManager = new AccountsManager(accounts, phoneNumberIdentifiers, cacheCluster,
         pubsubClient, accountLockManager, keysManager, messagesManager, profilesManager,
-        secureStorageClient, secureValueRecovery2Client, disconnectionRequestManager,
+        secureStorageClient, secureValueRecovery2Client, secureValueRecovery3Client, disconnectionRequestManager,
         registrationRecoveryPasswordsManager, clientPublicKeysManager, accountLockExecutor, messagePollExecutor,
         clock, config.getLinkDeviceSecretConfiguration().secret().value(), dynamicConfigurationManager);
     RemoteConfigsManager remoteConfigsManager = new RemoteConfigsManager(remoteConfigs);
@@ -790,6 +798,20 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         cdn3BackupCredentialGenerator,
         cdn3RemoteStorageManager,
         clock);
+
+    final AppleDeviceChecks appleDeviceChecks = new AppleDeviceChecks(
+        dynamoDbClient,
+        DeviceCheckManager.createObjectConverter(),
+        config.getDynamoDbTables().getAppleDeviceChecks().getTableName(),
+        config.getDynamoDbTables().getAppleDeviceCheckPublicKeys().getTableName());
+    final DeviceCheckManager deviceCheckManager = new DeviceCheckManager(new AppleDeviceCheckTrustAnchor());
+    deviceCheckManager.getAttestationDataValidator().setProduction(config.getAppleDeviceCheck().production());
+    final AppleDeviceCheckManager appleDeviceCheckManager = new AppleDeviceCheckManager(
+        appleDeviceChecks,
+        cacheCluster,
+        deviceCheckManager,
+        config.getAppleDeviceCheck().teamId(),
+        config.getAppleDeviceCheck().bundleId());
 
     final DynamicConfigTurnRouter configTurnRouter = new DynamicConfigTurnRouter(dynamicConfigurationManager);
 
@@ -1094,6 +1116,9 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
             zkAuthOperations, callingGenericZkSecretParams, clock),
         new ChallengeController(rateLimitChallengeManager, challengeConstraintChecker),
         new DeviceController(accountsManager, clientPublicKeysManager, rateLimiters, config.getMaxDevices()),
+        new DeviceCheckController(clock, backupAuthManager, appleDeviceCheckManager, rateLimiters,
+            config.getDeviceCheck().backupRedemptionLevel(),
+            config.getDeviceCheck().backupRedemptionDuration()),
         new DirectoryV2Controller(directoryV2CredentialsGenerator),
         new DonationController(clock, zkReceiptOperations, redeemedReceiptsManager, accountsManager, config.getBadges(),
             ReceiptCredentialPresentation::new),

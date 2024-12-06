@@ -54,6 +54,7 @@ import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClient;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
 import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery2Client;
+import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery3Client;
 import org.whispersystems.textsecuregcm.storage.DynamoDbExtensionSchema.Tables;
 import org.whispersystems.textsecuregcm.tests.util.DevicesHelper;
 import org.whispersystems.textsecuregcm.tests.util.JsonHelpers;
@@ -91,6 +92,7 @@ class AccountsManagerConcurrentModificationIntegrationTest {
     when(dynamicConfigurationManager.getConfiguration()).thenReturn(new DynamicConfiguration());
 
     accounts = new Accounts(
+        Clock.systemUTC(),
         DYNAMO_DB_EXTENSION.getDynamoDbClient(),
         DYNAMO_DB_EXTENSION.getDynamoDbAsyncClient(),
         Tables.ACCOUNTS.tableName(),
@@ -135,6 +137,7 @@ class AccountsManagerConcurrentModificationIntegrationTest {
           mock(ProfilesManager.class),
           mock(SecureStorageClient.class),
           mock(SecureValueRecovery2Client.class),
+          mock(SecureValueRecovery3Client.class),
           mock(DisconnectionRequestManager.class),
           mock(RegistrationRecoveryPasswordsManager.class),
           mock(ClientPublicKeysManager.class),

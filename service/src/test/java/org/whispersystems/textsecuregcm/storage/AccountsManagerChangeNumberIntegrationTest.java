@@ -41,6 +41,7 @@ import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClient;
 import org.whispersystems.textsecuregcm.redis.RedisClusterExtension;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
 import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery2Client;
+import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery3Client;
 import org.whispersystems.textsecuregcm.storage.DynamoDbExtensionSchema.Tables;
 import org.whispersystems.textsecuregcm.tests.util.AccountsHelper;
 import org.whispersystems.textsecuregcm.tests.util.KeysHelper;
@@ -93,6 +94,7 @@ class AccountsManagerChangeNumberIntegrationTest {
           DynamoDbExtensionSchema.Tables.CLIENT_PUBLIC_KEYS.tableName());
 
       final Accounts accounts = new Accounts(
+          Clock.systemUTC(),
           DYNAMO_DB_EXTENSION.getDynamoDbClient(),
           DYNAMO_DB_EXTENSION.getDynamoDbAsyncClient(),
           Tables.ACCOUNTS.tableName(),
@@ -115,6 +117,9 @@ class AccountsManagerChangeNumberIntegrationTest {
 
       final SecureValueRecovery2Client svr2Client = mock(SecureValueRecovery2Client.class);
       when(svr2Client.deleteBackups(any())).thenReturn(CompletableFuture.completedFuture(null));
+
+      final SecureValueRecovery3Client svr3Client = mock(SecureValueRecovery3Client.class);
+      when(svr3Client.deleteBackups(any())).thenReturn(CompletableFuture.completedFuture(null));
 
       disconnectionRequestManager = mock(DisconnectionRequestManager.class);
 
@@ -144,6 +149,7 @@ class AccountsManagerChangeNumberIntegrationTest {
           profilesManager,
           secureStorageClient,
           svr2Client,
+          svr3Client,
           disconnectionRequestManager,
           registrationRecoveryPasswordsManager,
           clientPublicKeysManager,

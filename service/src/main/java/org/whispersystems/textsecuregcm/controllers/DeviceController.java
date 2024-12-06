@@ -68,7 +68,6 @@ import org.whispersystems.textsecuregcm.entities.RemoteAttachment;
 import org.whispersystems.textsecuregcm.entities.RemoteAttachmentError;
 import org.whispersystems.textsecuregcm.entities.RestoreAccountRequest;
 import org.whispersystems.textsecuregcm.entities.SetPublicKeyRequest;
-import org.whispersystems.textsecuregcm.entities.TransferArchiveResult;
 import org.whispersystems.textsecuregcm.entities.TransferArchiveUploadedRequest;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.limits.RateLimitedByIp;
@@ -143,9 +142,13 @@ public class DeviceController {
   @GET
   @Produces(MediaType.APPLICATION_JSON)
   public DeviceInfoList getDevices(@ReadOnly @Auth AuthenticatedDevice auth) {
-    return new DeviceInfoList(auth.getAccount().getDevices().stream()
-        .map(DeviceInfo::forDevice)
-        .toList());
+    // Devices may change their own names (and primary devices may change the names of linked devices) and so the device
+    // state associated with the authenticated account may be stale. Fetch a fresh copy to compensate.
+    return accounts.getByAccountIdentifier(auth.getAccount().getIdentifier(IdentityType.ACI))
+        .map(account -> new DeviceInfoList(account.getDevices().stream()
+            .map(DeviceInfo::forDevice)
+            .toList()))
+        .orElseThrow(ForbiddenException::new);
   }
 
   @DELETE
@@ -398,14 +401,6 @@ public class DeviceController {
     } catch (final UnrecognizedUserAgentException ignored) {
       return linkedDeviceListenersForUnrecognizedPlatforms;
     }
-  }
-
-  @PUT
-  @Produces(MediaType.APPLICATION_JSON)
-  @Path("/unauthenticated_delivery")
-  public void setUnauthenticatedDelivery(@Mutable @Auth AuthenticatedDevice auth) {
-    assert (auth.getAuthenticatedDevice() != null);
-    // Deprecated
   }
 
   @PUT

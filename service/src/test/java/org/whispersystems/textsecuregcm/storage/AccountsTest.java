@@ -22,7 +22,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.google.i18n.phonenumbers.PhoneNumberUtil;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -600,7 +599,9 @@ class AccountsTest {
   void testUpdateWithMockTransactionConflictException(boolean wrapException) {
 
     final DynamoDbAsyncClient dynamoDbAsyncClient = mock(DynamoDbAsyncClient.class);
-    accounts = new Accounts(mock(DynamoDbClient.class),
+    accounts = new Accounts(
+        clock,
+        mock(DynamoDbClient.class),
         dynamoDbAsyncClient,
         Tables.ACCOUNTS.tableName(),
         Tables.NUMBERS.tableName(),
@@ -689,7 +690,9 @@ class AccountsTest {
   void testUpdateTransactionallyWithMockTransactionConflictException() {
     final DynamoDbAsyncClient dynamoDbAsyncClient = mock(DynamoDbAsyncClient.class);
 
-    accounts = new Accounts(mock(DynamoDbClient.class),
+    accounts = new Accounts(
+        clock,
+        mock(DynamoDbClient.class),
         dynamoDbAsyncClient,
         Tables.ACCOUNTS.tableName(),
         Tables.NUMBERS.tableName(),
@@ -1081,7 +1084,9 @@ class AccountsTest {
       final Class<Exception> expectedException) {
     final DynamoDbAsyncClient dbAsyncClient = mock(DynamoDbAsyncClient.class);
 
-    accounts = new Accounts(mock(DynamoDbClient.class),
+    accounts = new Accounts(
+        clock,
+        mock(DynamoDbClient.class),
         dbAsyncClient,
         Tables.ACCOUNTS.tableName(),
         Tables.NUMBERS.tableName(),
@@ -1124,7 +1129,9 @@ class AccountsTest {
       final Class<Exception> expectedException) {
     final DynamoDbAsyncClient dbAsyncClient = mock(DynamoDbAsyncClient.class);
 
-    accounts = new Accounts(mock(DynamoDbClient.class),
+    accounts = new Accounts(
+        clock,
+        mock(DynamoDbClient.class),
         dbAsyncClient,
         Tables.ACCOUNTS.tableName(),
         Tables.NUMBERS.tableName(),
@@ -1225,7 +1232,9 @@ class AccountsTest {
       final Optional<String> accountsCancellationString) {
     final DynamoDbAsyncClient dbAsyncClient = mock(DynamoDbAsyncClient.class);
 
-    accounts = new Accounts(mock(DynamoDbClient.class),
+    accounts = new Accounts(
+        clock,
+        mock(DynamoDbClient.class),
         dbAsyncClient,
         Tables.ACCOUNTS.tableName(),
         Tables.NUMBERS.tableName(),
@@ -1696,32 +1705,6 @@ class AccountsTest {
     }
 
     assertInstanceOf(DeviceIdDeserializer.DeviceIdDeserializationException.class, cause);
-  }
-
-  @Test
-  public void getE164sForRecentlyDeletedAccounts() {
-    final UUID accountIdentifier = UUID.randomUUID();
-    final UUID phoneNumberIdentifier = UUID.randomUUID();
-    final String phoneNumber = PhoneNumberUtil.getInstance().format(
-        PhoneNumberUtil.getInstance().getExampleNumber("US"),
-        PhoneNumberUtil.PhoneNumberFormat.E164);
-
-    final Account deletedAccount = generateAccount(phoneNumber, accountIdentifier, phoneNumberIdentifier);
-    createAccount(deletedAccount);
-    accounts.delete(deletedAccount.getUuid(), List.of()).join();
-
-    // Artificially insert this row to simulate legacy data
-    DYNAMO_DB_EXTENSION.getDynamoDbClient().putItem(PutItemRequest.builder()
-        .tableName(Tables.DELETED_ACCOUNTS.tableName())
-        .item(Map.of(
-            Accounts.DELETED_ACCOUNTS_KEY_ACCOUNT_PNI, AttributeValues.fromString(phoneNumber),
-            Accounts.DELETED_ACCOUNTS_ATTR_ACCOUNT_UUID, AttributeValues.fromUUID(accountIdentifier),
-            Accounts.DELETED_ACCOUNTS_ATTR_EXPIRES, AttributeValues.fromLong(clock.instant().plus(Accounts.DELETED_ACCOUNTS_TIME_TO_LIVE).getEpochSecond())))
-        .build());
-
-    assertEquals(
-        List.of(phoneNumber),
-        accounts.getE164sForRecentlyDeletedAccounts(1, Schedulers.immediate()).collectList().block());
   }
 
   private static Device generateDevice(byte id) {
