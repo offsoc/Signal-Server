@@ -17,7 +17,6 @@ import org.whispersystems.textsecuregcm.attachments.TusConfiguration;
 import org.whispersystems.textsecuregcm.configuration.ApnConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AppleAppStoreConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AppleDeviceCheckConfiguration;
-import org.whispersystems.textsecuregcm.configuration.ArtServiceConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AwsCredentialsProviderFactory;
 import org.whispersystems.textsecuregcm.configuration.BadgesConfiguration;
 import org.whispersystems.textsecuregcm.configuration.BraintreeConfiguration;
@@ -52,7 +51,6 @@ import org.whispersystems.textsecuregcm.configuration.ReportMessageConfiguration
 import org.whispersystems.textsecuregcm.configuration.S3ObjectMonitorFactory;
 import org.whispersystems.textsecuregcm.configuration.SecureStorageServiceConfiguration;
 import org.whispersystems.textsecuregcm.configuration.SecureValueRecovery2Configuration;
-import org.whispersystems.textsecuregcm.configuration.SecureValueRecovery3Configuration;
 import org.whispersystems.textsecuregcm.configuration.ShortCodeExpanderConfiguration;
 import org.whispersystems.textsecuregcm.configuration.SpamFilterConfiguration;
 import org.whispersystems.textsecuregcm.configuration.StripeConfiguration;
@@ -157,10 +155,6 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @JsonProperty
   private SecureValueRecovery2Configuration svr2;
-  @NotNull
-  @Valid
-  @JsonProperty
-  private SecureValueRecovery3Configuration svr3;
 
   @NotNull
   @Valid
@@ -221,11 +215,6 @@ public class WhisperServerConfiguration extends Configuration {
   @NotNull
   @JsonProperty
   private PaymentsServiceConfiguration paymentsService;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private ArtServiceConfiguration artService;
 
   @Valid
   @NotNull
@@ -410,9 +399,6 @@ public class WhisperServerConfiguration extends Configuration {
   public SecureValueRecovery2Configuration getSvr2Configuration() {
     return svr2;
   }
-  public SecureValueRecovery3Configuration getSvr3Configuration() {
-    return svr3;
-  }
 
   public DirectoryV2Configuration getDirectoryV2Configuration() {
     return directoryV2;
@@ -475,10 +461,6 @@ public class WhisperServerConfiguration extends Configuration {
 
   public PaymentsServiceConfiguration getPaymentsServiceConfiguration() {
     return paymentsService;
-  }
-
-  public ArtServiceConfiguration getArtServiceConfiguration() {
-    return artService;
   }
 
   public ZkConfig getZkConfig() {
