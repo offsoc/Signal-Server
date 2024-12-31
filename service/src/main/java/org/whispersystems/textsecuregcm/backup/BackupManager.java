@@ -23,6 +23,11 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 import org.signal.libsignal.protocol.ecc.Curve;
 import org.signal.libsignal.protocol.ecc.ECPublicKey;
 import org.signal.libsignal.zkgroup.GenericServerSecretParams;
@@ -687,6 +692,16 @@ public class BackupManager {
   }
 
   static String rateLimitKey(final AuthenticatedBackupUser backupUser) {
-    return Base64.getEncoder().encodeToString(BackupsDb.hashedBackupId(backupUser.backupId()));
+    try {
+      KeyGenerator keyGen = KeyGenerator.getInstance("AES");
+      keyGen.init(256);
+      SecretKey secretKey = keyGen.generateKey();
+      Cipher cipher = Cipher.getInstance("AES");
+      cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+      byte[] encrypted = cipher.doFinal(BackupsDb.hashedBackupId(backupUser.backupId()));
+      return Base64.getEncoder().encodeToString(encrypted);
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
   }
 }

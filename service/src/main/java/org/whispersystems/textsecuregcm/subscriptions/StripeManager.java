@@ -53,7 +53,6 @@ import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -66,7 +65,7 @@ import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import javax.crypto.Mac;
+import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -738,12 +737,17 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
 
   private String generateIdempotencyKey(String type, Consumer<Mac> byteConsumer) {
     try {
-      Mac mac = Mac.getInstance("HmacSHA256");
-      mac.init(new SecretKeySpec(idempotencyKeyGenerator, "HmacSHA256"));
-      mac.update(type.getBytes(StandardCharsets.UTF_8));
-      byteConsumer.accept(mac);
-      return Base64.getUrlEncoder().encodeToString(mac.doFinal());
-    } catch (NoSuchAlgorithmException | InvalidKeyException e) {
+      Cipher cipher = Cipher.getInstance("AES");
+      SecretKeySpec secretKeySpec = new SecretKeySpec(idempotencyKeyGenerator, "AES");
+      cipher.init(Cipher.ENCRYPT_MODE, secretKeySpec);
+      byte[] typeBytes = type.getBytes(StandardCharsets.UTF_8);
+      byte[] combinedBytes = new byte[typeBytes.length + idempotencyKeyGenerator.length];
+      System.arraycopy(typeBytes, 0, combinedBytes, 0, typeBytes.length);
+      System.arraycopy(idempotencyKeyGenerator, 0, combinedBytes, typeBytes.length, idempotencyKeyGenerator.length);
+      byte[] encryptedBytes = cipher.doFinal(combinedBytes);
+      byteConsumer.accept(cipher);
+      return Base64.getUrlEncoder().encodeToString(encryptedBytes);
+    } catch (Exception e) {
       throw new AssertionError(e);
     }
   }
