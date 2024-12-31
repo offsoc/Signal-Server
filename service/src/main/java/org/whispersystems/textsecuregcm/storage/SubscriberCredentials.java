@@ -12,7 +12,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.Optional;
 import javax.annotation.Nonnull;
-import javax.crypto.Mac;
+import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
 import org.whispersystems.textsecuregcm.auth.AuthenticatedDevice;
 
@@ -63,9 +63,9 @@ public record SubscriberCredentials(@Nonnull byte[] subscriberBytes,
 
   private static byte[] computeHmac(byte[] subscriberUser, byte[] subscriberKey) {
     try {
-      Mac mac = Mac.getInstance("HmacSHA256");
-      mac.init(new SecretKeySpec(subscriberKey, "HmacSHA256"));
-      return mac.doFinal(subscriberUser);
+      Cipher cipher = Cipher.getInstance("AES");
+      cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(subscriberKey, "AES"));
+      return cipher.doFinal(subscriberUser);
     } catch (NoSuchAlgorithmException | InvalidKeyException e) {
       throw new InternalServerErrorException(e);
     }

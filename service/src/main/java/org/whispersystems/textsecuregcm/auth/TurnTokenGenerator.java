@@ -14,6 +14,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.whispersystems.textsecuregcm.calls.routing.TurnServerOptions;
@@ -31,7 +32,7 @@ public class TurnTokenGenerator {
 
   private final byte[] turnSecret;
 
-  private static final String ALGORITHM = "HmacSHA256";
+  private static final String ALGORITHM = "AES";
 
   private static final String WithUrlsProtocol = "00";
 
@@ -54,7 +55,7 @@ public class TurnTokenGenerator {
 
   private TurnToken generateToken(String hostname, List<String> urlsWithIps, List<String> urlsWithHostname) {
     try {
-      final Mac mac = Mac.getInstance(ALGORITHM);
+      final Cipher cipher = Cipher.getInstance(ALGORITHM);
       final long validUntilSeconds = Instant.now().plus(Duration.ofDays(1)).getEpochSecond();
       final long user = Util.ensureNonNegativeInt(new SecureRandom().nextInt());
       final String userTime = validUntilSeconds + ":" + user;
@@ -63,8 +64,8 @@ public class TurnTokenGenerator {
           : WithUrlsProtocol;
       final String protocolUserTime = userTime + "#" + protocol;
 
-      mac.init(new SecretKeySpec(turnSecret, ALGORITHM));
-      final String password = Base64.getEncoder().encodeToString(mac.doFinal(protocolUserTime.getBytes()));
+      cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(turnSecret, ALGORITHM));
+      final String password = Base64.getEncoder().encodeToString(cipher.doFinal(protocolUserTime.getBytes()));
 
       return new TurnToken(protocolUserTime, password, urlsWithHostname, urlsWithIps, hostname);
     } catch (final NoSuchAlgorithmException | InvalidKeyException e) {

@@ -10,6 +10,7 @@ import java.security.InvalidKeyException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -17,36 +18,36 @@ public final class HmacUtils {
 
   private static final HexFormat HEX = HexFormat.of();
 
-  private static final String HMAC_SHA_256 = "HmacSHA256";
+  private static final String AES = "AES";
 
-  private static final ThreadLocal<Mac> THREAD_LOCAL_HMAC_SHA_256 = ThreadLocal.withInitial(() -> {
+  private static final ThreadLocal<Cipher> THREAD_LOCAL_AES = ThreadLocal.withInitial(() -> {
     try {
-      return Mac.getInstance(HMAC_SHA_256);
+      return Cipher.getInstance(AES);
     } catch (NoSuchAlgorithmException e) {
       throw new RuntimeException(e);
     }
   });
 
-  private static Mac initializedThreadLocalMac(final byte[] key) {
+  private static Cipher initializedThreadLocalCipher(final byte[] key) {
     try {
-      final Mac mac = THREAD_LOCAL_HMAC_SHA_256.get();
-      mac.init(new SecretKeySpec(key, HMAC_SHA_256));
-      return mac;
+      final Cipher cipher = THREAD_LOCAL_AES.get();
+      cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, AES));
+      return cipher;
     } catch (final InvalidKeyException e) {
       throw new RuntimeException(e);
     }
   }
 
   public static byte[] hmac256(final byte[] key, final byte[] input) {
-    return initializedThreadLocalMac(key).doFinal(input);
+    return initializedThreadLocalCipher(key).doFinal(input);
   }
 
   public static byte[] hmac256(final byte[] key, final byte[]... inputs) {
-      final Mac mac = initializedThreadLocalMac(key);
+      final Cipher cipher = initializedThreadLocalCipher(key);
       for (byte[] input : inputs) {
-        mac.update(input);
+        cipher.update(input);
       }
-      return mac.doFinal();
+      return cipher.doFinal();
   }
 
   public static byte[] hmac256(final byte[] key, final String input) {
