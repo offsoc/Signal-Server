@@ -177,6 +177,7 @@ public class MessageController {
   private static final CompletableFuture<?>[] EMPTY_FUTURE_ARRAY = new CompletableFuture<?>[0];
 
   private static final String REJECT_OVERSIZE_MESSAGE_COUNTER = name(MessageController.class, "rejectOversizeMessage");
+  private static final String LARGE_BUT_NOT_OVERSIZE_MESSAGE_COUNTER = name(MessageController.class, "largeMessage");
   private static final String SENT_MESSAGE_COUNTER_NAME = name(MessageController.class, "sentMessages");
   private static final String CONTENT_SIZE_DISTRIBUTION_NAME = MetricsUtil.name(MessageController.class, "messageContentSize");
   private static final String OUTGOING_MESSAGE_LIST_SIZE_BYTES_DISTRIBUTION_NAME = name(MessageController.class, "outgoingMessageListSizeBytes");
@@ -208,6 +209,12 @@ public class MessageController {
 
   @VisibleForTesting
   static final long MAX_MESSAGE_SIZE = DataSize.kibibytes(256).toBytes();
+  private static final long LARGE_MESSAGE_SIZE = DataSize.kibibytes(8).toBytes();
+
+  // The Signal desktop client (really, JavaScript in general) can handle message timestamps at most 100,000,000 days
+  // past the epoch; please see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date#the_epoch_timestamps_and_invalid_date
+  // for additional details.
+  public static final long MAX_TIMESTAMP = 86_400_000L * 100_000_000L;
 
   private static final Duration NOTIFY_FOR_REMAINING_MESSAGES_DELAY = Duration.ofMinutes(1);
 
@@ -553,6 +560,10 @@ public class MessageController {
       @NotNull SealedSenderMultiRecipientMessage multiRecipientMessage,
 
       @Context ContainerRequestContext context) throws RateLimitExceededException {
+
+    if (timestamp < 0 || timestamp > MAX_TIMESTAMP) {
+      throw new BadRequestException("Illegal timestamp");
+    }
 
     final SpamChecker.SpamCheckResult spamCheck = spamChecker.checkForSpam(context, Optional.empty(), Optional.empty(), Optional.empty());
     if (spamCheck instanceof final SpamChecker.Spam spam) {
@@ -993,6 +1004,12 @@ public class MessageController {
           .increment();
       throw new WebApplicationException(Status.REQUEST_ENTITY_TOO_LARGE);
     }
+    if (contentLength > LARGE_MESSAGE_SIZE) {
+      Metrics.counter(
+          LARGE_BUT_NOT_OVERSIZE_MESSAGE_COUNTER,
+          Tags.of(UserAgentTagUtil.getPlatformTag(userAgent), Tag.of("multiRecipientMessage", String.valueOf(multiRecipientMessage))))
+          .increment();
+    }      
   }
 
   private void validateEnvelopeType(final int type, final String userAgent) {
