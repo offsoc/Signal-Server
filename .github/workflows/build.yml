@@ -38,24 +38,24 @@ jobs:
         ./mvnw clean install -DskipTests -Pexclude-spam-filter
         
     - name: Upload compiled artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: signal-server-artifacts
         path: Signal-Server/service/target/*.jar 
     - name: Upload compiled artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: websocket-resources-artifacts
         path: Signal-Server/websocket-resources/target/*.jar 
 
     - name: Upload compiled artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name:  api-doc-artifacts
         path: Signal-Server/api-doc/target/*.jar 
 
     - name: Upload compiled artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name:  integration-tests-artifacts
         path: Signal-Server/integration-tests/target/*.jar 
