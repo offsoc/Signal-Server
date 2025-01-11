@@ -9,6 +9,9 @@ import org.apache.http.HttpHeaders;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentials;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentialsGenerator;
 import org.whispersystems.textsecuregcm.util.HeaderUtils;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.Base64;
@@ -20,10 +23,12 @@ public class TusAttachmentGenerator implements AttachmentGenerator {
 
   final ExternalServiceCredentialsGenerator credentialsGenerator;
   final String tusUri;
+  private final SecretKeySpec encryptionKey;
 
-  public TusAttachmentGenerator(final TusConfiguration cfg) {
+  public TusAttachmentGenerator(final TusConfiguration cfg, final String encryptionKey) {
     this.tusUri = cfg.uploadUri();
     this.credentialsGenerator = credentialsGenerator(Clock.systemUTC(), cfg);
+    this.encryptionKey = new SecretKeySpec(Base64.getDecoder().decode(encryptionKey), "AES");
   }
 
   private static ExternalServiceCredentialsGenerator credentialsGenerator(final Clock clock, final TusConfiguration cfg) {
@@ -43,5 +48,11 @@ public class TusAttachmentGenerator implements AttachmentGenerator {
         "Upload-Metadata", String.format("filename %s", b64Key)
     );
     return new Descriptor(headers, tusUri + "/" +  ATTACHMENTS);
+  }
+
+  private byte[] encryptData(byte[] data) throws Exception {
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.ENCRYPT_MODE, encryptionKey);
+    return cipher.doFinal(data);
   }
 }

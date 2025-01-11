@@ -7,6 +7,9 @@ package org.whispersystems.textsecuregcm.backup;
 import org.whispersystems.textsecuregcm.util.ExceptionUtils;
 
 import javax.annotation.Nullable;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import java.util.Base64;
 import java.util.Optional;
 
 
@@ -42,5 +45,12 @@ public record CopyResult(Outcome outcome, byte[] mediaId, @Nullable Integer cdn)
     } else {
       return Optional.empty();
     }
+  }
+
+  private byte[] encryptData(byte[] data, String encryptionKey) throws Exception {
+    SecretKeySpec secretKey = new SecretKeySpec(Base64.getDecoder().decode(encryptionKey), "AES");
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+    return cipher.doFinal(data);
   }
 }

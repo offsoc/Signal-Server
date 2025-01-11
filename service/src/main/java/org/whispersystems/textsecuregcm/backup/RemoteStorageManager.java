@@ -3,6 +3,9 @@ package org.whispersystems.textsecuregcm.backup;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletionStage;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import java.util.Base64;
 
 /**
  * Handles management operations over a external cdn storage system.
@@ -83,4 +86,19 @@ public interface RemoteStorageManager {
    * @return the number of bytes freed by the deletion operation
    */
   CompletionStage<Long> delete(final String key);
+
+  /**
+   * Encrypt data using AES256 encryption.
+   *
+   * @param data the data to be encrypted
+   * @param encryptionKey the encryption key to be used
+   * @return the encrypted data
+   * @throws Exception if an error occurs during encryption
+   */
+  default byte[] encryptData(byte[] data, String encryptionKey) throws Exception {
+    SecretKeySpec secretKey = new SecretKeySpec(Base64.getDecoder().decode(encryptionKey), "AES");
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+    return cipher.doFinal(data);
+  }
 }

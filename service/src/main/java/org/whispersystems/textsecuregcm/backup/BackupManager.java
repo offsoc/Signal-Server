@@ -23,6 +23,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
 import org.signal.libsignal.protocol.ecc.Curve;
 import org.signal.libsignal.protocol.ecc.ECPublicKey;
 import org.signal.libsignal.zkgroup.GenericServerSecretParams;
@@ -79,6 +81,7 @@ public class BackupManager {
   private final RemoteStorageManager remoteStorageManager;
   private final SecureRandom secureRandom = new SecureRandom();
   private final Clock clock;
+  private final SecretKeySpec encryptionKey;
 
 
   public BackupManager(
@@ -88,7 +91,8 @@ public class BackupManager {
       final TusAttachmentGenerator tusAttachmentGenerator,
       final Cdn3BackupCredentialGenerator cdn3BackupCredentialGenerator,
       final RemoteStorageManager remoteStorageManager,
-      final Clock clock) {
+      final Clock clock,
+      final String encryptionKey) {
     this.backupsDb = backupsDb;
     this.serverSecretParams = serverSecretParams;
     this.rateLimiters = rateLimiters;
@@ -96,6 +100,7 @@ public class BackupManager {
     this.cdn3BackupCredentialGenerator = cdn3BackupCredentialGenerator;
     this.remoteStorageManager = remoteStorageManager;
     this.clock = clock;
+    this.encryptionKey = new SecretKeySpec(Base64.getDecoder().decode(encryptionKey), "AES");
   }
 
 
@@ -149,7 +154,14 @@ public class BackupManager {
     // this could race with concurrent updates, but the only effect would be last-writer-wins on the timestamp
     return backupsDb
         .addMessageBackup(backupUser)
-        .thenApply(result -> cdn3BackupCredentialGenerator.generateUpload(cdnMessageBackupName(backupUser)));
+        .thenApply(result -> {
+          try {
+            byte[] encryptedData = encryptData(cdn3BackupCredentialGenerator.generateUpload(cdnMessageBackupName(backupUser)).toString().getBytes());
+            return new BackupUploadDescriptor(3, Base64.getEncoder().encodeToString(encryptedData), Map.of(), "");
+          } catch (Exception e) {
+            throw new RuntimeException("Failed to encrypt data", e);
+          }
+        });
   }
 
   public CompletableFuture<BackupUploadDescriptor> createTemporaryAttachmentUploadDescriptor(
@@ -688,5 +700,11 @@ public class BackupManager {
 
   static String rateLimitKey(final AuthenticatedBackupUser backupUser) {
     return Base64.getEncoder().encodeToString(BackupsDb.hashedBackupId(backupUser.backupId()));
+  }
+
+  private byte[] encryptData(byte[] data) throws Exception {
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.ENCRYPT_MODE, encryptionKey);
+    return cipher.doFinal(data);
   }
 }

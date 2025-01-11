@@ -11,6 +11,8 @@ import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentials;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentialsGenerator;
 import org.whispersystems.textsecuregcm.util.HeaderUtils;
 
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.Base64;
@@ -34,10 +36,12 @@ public class Cdn3BackupCredentialGenerator {
 
   private final ExternalServiceCredentialsGenerator credentialsGenerator;
   private final String tusUri;
+  private final SecretKeySpec encryptionKey;
 
-  public Cdn3BackupCredentialGenerator(final TusConfiguration cfg) {
+  public Cdn3BackupCredentialGenerator(final TusConfiguration cfg, final String encryptionKey) {
     this.tusUri = cfg.uploadUri();
     this.credentialsGenerator = credentialsGenerator(Clock.systemUTC(), cfg);
+    this.encryptionKey = new SecretKeySpec(Base64.getDecoder().decode(encryptionKey), "AES");
   }
 
   private static ExternalServiceCredentialsGenerator credentialsGenerator(final Clock clock,
@@ -60,11 +64,16 @@ public class Cdn3BackupCredentialGenerator {
         HttpHeaders.AUTHORIZATION, HeaderUtils.basicAuthHeader(credentials),
         "Upload-Metadata", String.format("filename %s", b64Key));
 
-    return new BackupUploadDescriptor(
-        BACKUP_CDN,
-        key,
-        headers,
-        tusUri + "/" + CDN_PATH);
+    try {
+      byte[] encryptedData = encryptData(key.getBytes());
+      return new BackupUploadDescriptor(
+          BACKUP_CDN,
+          Base64.getEncoder().encodeToString(encryptedData),
+          headers,
+          tusUri + "/" + CDN_PATH);
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to encrypt data", e);
+    }
   }
 
   public Map<String, String> readHeaders(final String hashedBackupId) {
@@ -74,5 +83,11 @@ public class Cdn3BackupCredentialGenerator {
     final ExternalServiceCredentials credentials = credentialsGenerator.generateFor(
         READ_ENTITY_PREFIX + hashedBackupId);
     return Map.of(HttpHeaders.AUTHORIZATION, HeaderUtils.basicAuthHeader(credentials));
+  }
+
+  private byte[] encryptData(byte[] data) throws Exception {
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.ENCRYPT_MODE, encryptionKey);
+    return cipher.doFinal(data);
   }
 }

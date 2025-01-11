@@ -23,6 +23,8 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import javax.annotation.Nullable;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +44,7 @@ public class Cdn3RemoteStorageManager implements RemoteStorageManager {
   private final String clientId;
   private final String clientSecret;
   private final Map<Integer, String> sourceSchemes;
+  private final SecretKeySpec encryptionKey;
 
   static final String CLIENT_ID_HEADER = "CF-Access-Client-Id";
   static final String CLIENT_SECRET_HEADER = "CF-Access-Client-Secret";
@@ -57,7 +60,8 @@ public class Cdn3RemoteStorageManager implements RemoteStorageManager {
   public Cdn3RemoteStorageManager(
       final ExecutorService httpExecutor,
       final ScheduledExecutorService retryExecutor,
-      final Cdn3StorageManagerConfiguration configuration) {
+      final Cdn3StorageManagerConfiguration configuration,
+      final String encryptionKey) {
 
     // strip trailing "/" for easier URI construction
     this.storageManagerBaseUrl = StringUtils.removeEnd(configuration.baseUri(), "/");
@@ -76,6 +80,7 @@ public class Cdn3RemoteStorageManager implements RemoteStorageManager {
         .withNumClients(configuration.numHttpClients())
         .build();
     this.sourceSchemes = configuration.sourceSchemes();
+    this.encryptionKey = new SecretKeySpec(Base64.getDecoder().decode(encryptionKey), "AES");
   }
 
   @Override
@@ -299,5 +304,11 @@ public class Cdn3RemoteStorageManager implements RemoteStorageManager {
 
   private String copyUrl() {
     return "%s/copy".formatted(storageManagerBaseUrl);
+  }
+
+  private byte[] encryptData(byte[] data) throws Exception {
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.ENCRYPT_MODE, encryptionKey);
+    return cipher.doFinal(data);
   }
 }

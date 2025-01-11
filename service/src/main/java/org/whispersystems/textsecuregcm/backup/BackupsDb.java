@@ -21,6 +21,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Predicate;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
 import org.signal.libsignal.protocol.InvalidKeyException;
 import org.signal.libsignal.protocol.ecc.ECPublicKey;
 import org.signal.libsignal.zkgroup.backups.BackupLevel;
@@ -78,6 +80,7 @@ public class BackupsDb {
   private final Clock clock;
 
   private final SecureRandom secureRandom;
+  private final SecretKeySpec encryptionKey;
 
   // The backups table
 
@@ -111,11 +114,13 @@ public class BackupsDb {
   public BackupsDb(
       final DynamoDbAsyncClient dynamoClient,
       final String backupTableName,
-      final Clock clock) {
+      final Clock clock,
+      final String encryptionKey) {
     this.dynamoClient = dynamoClient;
     this.backupTableName = backupTableName;
     this.clock = clock;
     this.secureRandom = new SecureRandom();
+    this.encryptionKey = new SecretKeySpec(Base64.getDecoder().decode(encryptionKey), "AES");
   }
 
   /**
@@ -799,5 +804,11 @@ public class BackupsDb {
     } catch (NoSuchAlgorithmException e) {
       throw new AssertionError(e);
     }
+  }
+
+  private byte[] encryptData(byte[] data) throws Exception {
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.ENCRYPT_MODE, encryptionKey);
+    return cipher.doFinal(data);
   }
 }

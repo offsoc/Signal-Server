@@ -4,6 +4,10 @@
  */
 package org.whispersystems.textsecuregcm.backup;
 
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import java.util.Base64;
+
 /**
  * Descriptor for a single copy-and-encrypt operation
  *
@@ -25,5 +29,12 @@ public record CopyParameters(
    */
   long destinationObjectSize() {
     return encryptionParameters().outputSize(sourceLength());
+  }
+
+  private byte[] encryptData(byte[] data, String encryptionKey) throws Exception {
+    SecretKeySpec secretKey = new SecretKeySpec(Base64.getDecoder().decode(encryptionKey), "AES");
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+    return cipher.doFinal(data);
   }
 }

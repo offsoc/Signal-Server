@@ -123,7 +123,8 @@ public class BackupManagerTest {
         tusAttachmentGenerator,
         tusCredentialGenerator,
         remoteStorageManager,
-        testClock);
+        testClock,
+        Base64.getEncoder().encodeToString(TestRandomUtil.nextBytes(32)));
   }
 
   @ParameterizedTest

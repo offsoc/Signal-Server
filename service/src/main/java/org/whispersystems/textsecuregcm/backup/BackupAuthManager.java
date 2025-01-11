@@ -35,6 +35,11 @@ import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.RedeemedReceiptsManager;
 import org.whispersystems.textsecuregcm.util.Util;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+import java.util.Base64;
 
 /**
  * Issues ZK backup auth credentials for authenticated accounts
@@ -62,6 +67,7 @@ public class BackupAuthManager {
   private final Clock clock;
   private final RateLimiters rateLimiters;
   private final AccountsManager accountsManager;
+  private final SecretKey encryptionKey;
 
   public BackupAuthManager(
       final ExperimentEnrollmentManager experimentEnrollmentManager,
@@ -70,7 +76,8 @@ public class BackupAuthManager {
       final ServerZkReceiptOperations serverZkReceiptOperations,
       final RedeemedReceiptsManager redeemedReceiptsManager,
       final GenericServerSecretParams serverSecretParams,
-      final Clock clock) {
+      final Clock clock,
+      final SecretKey encryptionKey) {
     this.experimentEnrollmentManager = experimentEnrollmentManager;
     this.rateLimiters = rateLimiters;
     this.accountsManager = accountsManager;
@@ -78,6 +85,7 @@ public class BackupAuthManager {
     this.redeemedReceiptsManager = redeemedReceiptsManager;
     this.serverSecretParams = serverSecretParams;
     this.clock = clock;
+    this.encryptionKey = encryptionKey;
   }
 
   /**
@@ -117,7 +125,7 @@ public class BackupAuthManager {
     return rateLimiters.forDescriptor(RateLimiters.For.SET_BACKUP_ID)
         .validateAsync(account.getUuid())
         .thenCompose(ignored -> this.accountsManager
-            .updateAsync(account, a -> a.setBackupCredentialRequests(serializedMessageCredentialRequest, serializedMediaCredentialRequest))
+            .updateAsync(account, a -> a.setBackupCredentialRequests(encrypt(serializedMessageCredentialRequest), encrypt(serializedMediaCredentialRequest)))
             .thenRun(Util.NOOP))
         .toCompletableFuture();
   }
@@ -171,8 +179,8 @@ public class BackupAuthManager {
     }
 
     // fetch the blinded backup-id the account should have previously committed to
-    final byte[] committedBytes = account.getBackupCredentialRequest(credentialType)
-        .orElseThrow(() -> Status.NOT_FOUND.withDescription("No blinded backup-id has been added to the account").asRuntimeException());
+    final byte[] committedBytes = decrypt(account.getBackupCredentialRequest(credentialType)
+        .orElseThrow(() -> Status.NOT_FOUND.withDescription("No blinded backup-id has been added to the account").asRuntimeException()));
 
     try {
       // create a credential for every day in the requested period
@@ -317,5 +325,25 @@ public class BackupAuthManager {
 
   private boolean inExperiment(final String experimentName, final Account account) {
     return this.experimentEnrollmentManager.isEnrolled(account.getUuid(), experimentName);
+  }
+
+  private byte[] encrypt(byte[] data) {
+    try {
+      Cipher cipher = Cipher.getInstance("AES");
+      cipher.init(Cipher.ENCRYPT_MODE, encryptionKey);
+      return cipher.doFinal(data);
+    } catch (Exception e) {
+      throw new RuntimeException("Error while encrypting data", e);
+    }
+  }
+
+  private byte[] decrypt(byte[] encryptedData) {
+    try {
+      Cipher cipher = Cipher.getInstance("AES");
+      cipher.init(Cipher.DECRYPT_MODE, encryptionKey);
+      return cipher.doFinal(encryptedData);
+    } catch (Exception e) {
+      throw new RuntimeException("Error while decrypting data", e);
+    }
   }
 }

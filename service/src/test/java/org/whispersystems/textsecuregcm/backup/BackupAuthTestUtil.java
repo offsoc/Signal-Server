@@ -14,6 +14,8 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
 import org.signal.libsignal.zkgroup.GenericServerSecretParams;
 import org.signal.libsignal.zkgroup.VerificationFailedException;
 import org.signal.libsignal.zkgroup.backups.BackupAuthCredentialPresentation;
@@ -28,9 +30,11 @@ public class BackupAuthTestUtil {
 
   final GenericServerSecretParams params = GenericServerSecretParams.generate();
   final Clock clock;
+  final SecretKey encryptionKey;
 
   public BackupAuthTestUtil(final Clock clock) {
     this.clock = clock;
+    this.encryptionKey = generateEncryptionKey();
   }
 
   public BackupAuthCredentialRequest getRequest(final byte[] backupKey, final UUID aci) {
@@ -69,10 +73,20 @@ public class BackupAuthTestUtil {
       case PAID -> BackupAuthManager.BACKUP_MEDIA_EXPERIMENT_NAME;
     };
     final BackupAuthManager issuer = new BackupAuthManager(
-        ExperimentHelper.withEnrollment(experimentName, aci), null, null, null, null, params, clock);
+        ExperimentHelper.withEnrollment(experimentName, aci), null, null, null, null, params, clock, encryptionKey);
     Account account = mock(Account.class);
     when(account.getUuid()).thenReturn(aci);
     when(account.getBackupCredentialRequest(credentialType)).thenReturn(Optional.of(request.serialize()));
     return issuer.getBackupAuthCredentials(account, credentialType, redemptionStart, redemptionEnd).join();
+  }
+
+  private SecretKey generateEncryptionKey() {
+    try {
+      KeyGenerator keyGen = KeyGenerator.getInstance("AES");
+      keyGen.init(256);
+      return keyGen.generateKey();
+    } catch (Exception e) {
+      throw new RuntimeException("Error while generating encryption key", e);
+    }
   }
 }

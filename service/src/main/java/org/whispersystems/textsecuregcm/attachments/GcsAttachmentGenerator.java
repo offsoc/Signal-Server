@@ -8,12 +8,19 @@ package org.whispersystems.textsecuregcm.attachments;
 import org.whispersystems.textsecuregcm.gcp.CanonicalRequest;
 import org.whispersystems.textsecuregcm.gcp.CanonicalRequestGenerator;
 import org.whispersystems.textsecuregcm.gcp.CanonicalRequestSigner;
+
 import javax.annotation.Nonnull;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.Base64;
 import java.util.Map;
 
 public class GcsAttachmentGenerator implements AttachmentGenerator {
@@ -23,11 +30,15 @@ public class GcsAttachmentGenerator implements AttachmentGenerator {
   @Nonnull
   private final CanonicalRequestSigner canonicalRequestSigner;
 
+  @Nonnull
+  private final SecretKey encryptionKey;
+
   public GcsAttachmentGenerator(@Nonnull String domain, @Nonnull String email,
-      int maxSizeInBytes, @Nonnull String pathPrefix, @Nonnull String rsaSigningKey)
-      throws IOException, InvalidKeyException, InvalidKeySpecException {
+      int maxSizeInBytes, @Nonnull String pathPrefix, @Nonnull String rsaSigningKey, @Nonnull String encryptionKey)
+      throws IOException, InvalidKeyException, InvalidKeySpecException, NoSuchAlgorithmException {
     this.canonicalRequestGenerator = new CanonicalRequestGenerator(domain, email, maxSizeInBytes, pathPrefix);
     this.canonicalRequestSigner = new CanonicalRequestSigner(rsaSigningKey);
+    this.encryptionKey = new SecretKeySpec(Base64.getDecoder().decode(encryptionKey), "AES");
   }
 
   @Override
@@ -50,5 +61,9 @@ public class GcsAttachmentGenerator implements AttachmentGenerator {
         "x-goog-resumable", "start");
   }
 
-
+  private byte[] encryptData(byte[] data) throws Exception {
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.ENCRYPT_MODE, encryptionKey);
+    return cipher.doFinal(data);
+  }
 }

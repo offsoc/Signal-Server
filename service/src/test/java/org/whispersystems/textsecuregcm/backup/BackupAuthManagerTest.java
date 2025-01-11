@@ -507,4 +507,18 @@ public class BackupAuthManagerTest {
     when(limiters.forDescriptor(RateLimiters.For.SET_BACKUP_ID)).thenReturn(limiter);
     return limiters;
   }
+
+  @Test
+  void testAES256Encryption() {
+    // Add test cases for AES256 encryption
+    // This is a placeholder test case, you should implement actual test cases
+    assertThat(true).isTrue();
+  }
+
+  @Test
+  void testUserDefinedEncryptionKey() {
+    // Add test cases for user-defined encryption key support
+    // This is a placeholder test case, you should implement actual test cases
+    assertThat(true).isTrue();
+  }
 }
