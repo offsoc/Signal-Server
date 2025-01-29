@@ -14,12 +14,17 @@ import io.grpc.TlsChannelCredentials;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import org.apache.commons.lang3.StringUtils;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.signal.registration.rpc.CheckVerificationCodeRequest;
@@ -35,9 +40,12 @@ import org.whispersystems.textsecuregcm.util.CompletableFutureUtil;
 
 public class RegistrationServiceClient implements Managed {
 
+  private static final Base64.Encoder BASE64_UNPADDED_ENCODER = Base64.getEncoder().withoutPadding();
+
   private final ManagedChannel channel;
   private final RegistrationServiceGrpc.RegistrationServiceFutureStub stub;
   private final Executor callbackExecutor;
+  private final byte[] collationKeySalt;
 
   /**
    * @param from an e164 in a {@code long} representation e.g. {@code 18005550123}
@@ -60,6 +68,7 @@ public class RegistrationServiceClient implements Managed {
       final int port,
       final CallCredentials callCredentials,
       final String caCertificatePem,
+      final byte[] collationKeySalt,
       final Executor callbackExecutor) throws IOException {
 
     try (final ByteArrayInputStream certificateInputStream = new ByteArrayInputStream(caCertificatePem.getBytes(StandardCharsets.UTF_8))) {
@@ -73,19 +82,29 @@ public class RegistrationServiceClient implements Managed {
     }
 
     this.stub = RegistrationServiceGrpc.newFutureStub(channel).withCallCredentials(callCredentials);
-
+    this.collationKeySalt = collationKeySalt;
     this.callbackExecutor = callbackExecutor;
+
+    // Fail fast: reject bad keys
+    try {
+      getInitializedMac(collationKeySalt);
+    } catch (final InvalidKeyException e) {
+      throw new IllegalArgumentException(e);
+    }
   }
 
   public CompletableFuture<RegistrationServiceSession> createRegistrationSession(
-      final Phonenumber.PhoneNumber phoneNumber, final boolean accountExistsWithPhoneNumber, final Duration timeout) {
+      final Phonenumber.PhoneNumber phoneNumber, final String sourceHost, final boolean accountExistsWithPhoneNumber, final Duration timeout) {
+
     final long e164 = Long.parseLong(
         PhoneNumberUtil.getInstance().format(phoneNumber, PhoneNumberUtil.PhoneNumberFormat.E164).substring(1));
+    final String rateLimitCollationKey = hmac(sourceHost);
 
     return CompletableFutureUtil.toCompletableFuture(stub.withDeadline(toDeadline(timeout))
         .createSession(CreateRegistrationSessionRequest.newBuilder()
             .setE164(e164)
             .setAccountExistsWithE164(accountExistsWithPhoneNumber)
+            .setRateLimitCollationKey(rateLimitCollationKey)
             .build()), callbackExecutor)
         .thenApply(response -> switch (response.getResponseCase()) {
           case SESSION_METADATA -> buildSessionResponseFromMetadata(response.getSessionMetadata());
@@ -257,6 +276,32 @@ public class RegistrationServiceClient implements Managed {
   public void stop() throws Exception {
     if (channel != null) {
       channel.shutdown();
+    }
+  }
+
+  private String hmac(String sourceHost) {
+      final Mac hmacSha256 = getInitializedMac();
+      hmacSha256.update(sourceHost.getBytes(StandardCharsets.UTF_8));
+
+      return BASE64_UNPADDED_ENCODER.encodeToString(hmacSha256.doFinal());
+  }
+
+  private Mac getInitializedMac() {
+    try {
+      return getInitializedMac(collationKeySalt);
+    } catch (final InvalidKeyException e) {
+      throw new AssertionError(e);
+    }
+  }
+
+
+  private static Mac getInitializedMac(byte[] key) throws InvalidKeyException {
+    try {
+      final Mac hmacSha256 = Mac.getInstance("HmacSHA256");
+      hmacSha256.init(new SecretKeySpec(key, "HmacSHA256"));
+      return hmacSha256;
+    } catch (NoSuchAlgorithmException e) {
+      throw new AssertionError(e);
     }
   }
 }

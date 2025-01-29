@@ -331,6 +331,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     bootstrap.addCommand(new BackupMetricsCommand(Clock.systemUTC()));
     bootstrap.addCommand(new RemoveExpiredLinkedDevicesCommand());
     bootstrap.addCommand(new NotifyIdleDevicesCommand());
+
     bootstrap.addCommand(new ProcessScheduledJobsServiceCommand("process-idle-device-notification-jobs",
         "Processes scheduled jobs to send notifications to idle devices",
         new IdleDeviceNotificationSchedulerFactory()));
