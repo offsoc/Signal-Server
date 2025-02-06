@@ -141,6 +141,7 @@ import org.whispersystems.textsecuregcm.filters.ExternalRequestFilter;
 import org.whispersystems.textsecuregcm.filters.RemoteAddressFilter;
 import org.whispersystems.textsecuregcm.filters.RemoteDeprecationFilter;
 import org.whispersystems.textsecuregcm.filters.RequestStatisticsFilter;
+import org.whispersystems.textsecuregcm.filters.RestDeprecationFilter;
 import org.whispersystems.textsecuregcm.filters.TimestampResponseFilter;
 import org.whispersystems.textsecuregcm.geo.MaxMindDatabaseManager;
 import org.whispersystems.textsecuregcm.grpc.AccountsAnonymousGrpcService;
@@ -227,6 +228,7 @@ import org.whispersystems.textsecuregcm.storage.MessagesCache;
 import org.whispersystems.textsecuregcm.storage.MessagesDynamoDb;
 import org.whispersystems.textsecuregcm.storage.MessagesManager;
 import org.whispersystems.textsecuregcm.storage.OneTimeDonationsManager;
+import org.whispersystems.textsecuregcm.storage.PersistentTimer;
 import org.whispersystems.textsecuregcm.storage.PhoneNumberIdentifiers;
 import org.whispersystems.textsecuregcm.storage.Profiles;
 import org.whispersystems.textsecuregcm.storage.ProfilesManager;
@@ -430,7 +432,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         config.getDynamoDbTables().getRemoteConfig().getTableName());
     PushChallengeDynamoDb pushChallengeDynamoDb = new PushChallengeDynamoDb(dynamoDbClient,
         config.getDynamoDbTables().getPushChallenge().getTableName());
-    ReportMessageDynamoDb reportMessageDynamoDb = new ReportMessageDynamoDb(dynamoDbClient,
+    ReportMessageDynamoDb reportMessageDynamoDb = new ReportMessageDynamoDb(dynamoDbClient, dynamoDbAsyncClient,
         config.getDynamoDbTables().getReportMessage().getTableName(),
         config.getReportMessageConfiguration().getReportTtl());
     RegistrationRecoveryPasswords registrationRecoveryPasswords = new RegistrationRecoveryPasswords(
@@ -617,7 +619,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     ReportMessageManager reportMessageManager = new ReportMessageManager(reportMessageDynamoDb, rateLimitersCluster,
         config.getReportMessageConfiguration().getCounterTtl());
     MessagesManager messagesManager = new MessagesManager(messagesDynamoDb, messagesCache, reportMessageManager,
-        messageDeletionAsyncExecutor);
+        messageDeletionAsyncExecutor, Clock.systemUTC());
     AccountLockManager accountLockManager = new AccountLockManager(dynamoDbClient,
         config.getDynamoDbTables().getDeletedAccountsLock().getTableName());
     ClientPublicKeysManager clientPublicKeysManager =
@@ -1000,7 +1002,12 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     metricsHttpChannelListener.configure(environment);
     final MessageMetrics messageMetrics = new MessageMetrics();
 
+    // BufferingInterceptor is needed on the base environment but not the WebSocketEnvironment,
+    // because we handle serialization of http responses on the websocket on our own and can
+    // compute content lengths without it
     environment.jersey().register(new BufferingInterceptor());
+    environment.jersey().register(new RestDeprecationFilter(dynamicConfigurationManager, experimentEnrollmentManager));
+
     environment.jersey().register(new VirtualExecutorServiceProvider("managed-async-virtual-thread-"));
     environment.jersey().register(new RateLimitByIpFilter(rateLimiters));
     environment.jersey().register(new RequestStatisticsFilter(TrafficSource.HTTP));
@@ -1097,6 +1104,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
       log.info("Registered spam filter: {}", filter.getClass().getName());
     });
 
+    final PersistentTimer persistentTimer = new PersistentTimer(rateLimitersCluster, clock);
 
     final PhoneVerificationTokenManager phoneVerificationTokenManager = new PhoneVerificationTokenManager(
         phoneNumberIdentifiers, registrationServiceClient, registrationRecoveryPasswordsManager, registrationRecoveryChecker);
@@ -1115,7 +1123,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
             config.getDeliveryCertificate().ecPrivateKey(), config.getDeliveryCertificate().expiresDays()),
             zkAuthOperations, callingGenericZkSecretParams, clock),
         new ChallengeController(rateLimitChallengeManager, challengeConstraintChecker),
-        new DeviceController(accountsManager, clientPublicKeysManager, rateLimiters, config.getMaxDevices()),
+        new DeviceController(accountsManager, clientPublicKeysManager, rateLimiters, persistentTimer, config.getMaxDevices()),
         new DeviceCheckController(clock, backupAuthManager, appleDeviceCheckManager, rateLimiters,
             config.getDeviceCheck().backupRedemptionLevel(),
             config.getDeviceCheck().backupRedemptionDuration()),
@@ -1126,7 +1134,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new KeyTransparencyController(keyTransparencyServiceClient),
         new MessageController(rateLimiters, messageByteLimitCardinalityEstimator, messageSender, receiptSender,
             accountsManager, messagesManager, phoneNumberIdentifiers, pushNotificationManager, pushNotificationScheduler,
-            reportMessageManager, multiRecipientMessageExecutor, messageDeliveryScheduler, clientReleaseManager,
+            reportMessageManager, messageDeliveryScheduler, clientReleaseManager,
             dynamicConfigurationManager, zkSecretParams, spamChecker, messageMetrics, messageDeliveryLoopMonitor,
             Clock.systemUTC()),
         new PaymentsController(currencyManager, paymentsCredentialsGenerator),

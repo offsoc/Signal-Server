@@ -12,7 +12,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyByte;
 import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -90,6 +89,7 @@ import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.storage.DeviceCapability;
 import org.whispersystems.textsecuregcm.storage.DeviceSpec;
 import org.whispersystems.textsecuregcm.storage.LinkDeviceTokenAlreadyUsedException;
+import org.whispersystems.textsecuregcm.storage.PersistentTimer;
 import org.whispersystems.textsecuregcm.tests.util.AccountsHelper;
 import org.whispersystems.textsecuregcm.tests.util.AuthHelper;
 import org.whispersystems.textsecuregcm.tests.util.KeysHelper;
@@ -104,6 +104,7 @@ class DeviceControllerTest {
 
   private static final AccountsManager accountsManager = mock(AccountsManager.class);
   private static final ClientPublicKeysManager clientPublicKeysManager = mock(ClientPublicKeysManager.class);
+  private static final PersistentTimer persistentTimer = mock(PersistentTimer.class);
   private static final RateLimiters rateLimiters = mock(RateLimiters.class);
   private static final RateLimiter rateLimiter = mock(RateLimiter.class);
   @SuppressWarnings("unchecked")
@@ -123,6 +124,7 @@ class DeviceControllerTest {
       accountsManager,
       clientPublicKeysManager,
       rateLimiters,
+      persistentTimer,
       deviceConfiguration);
 
   @RegisterExtension
@@ -160,6 +162,9 @@ class DeviceControllerTest {
 
     when(clientPublicKeysManager.setPublicKey(any(), anyByte(), any()))
         .thenReturn(CompletableFuture.completedFuture(null));
+
+    when(persistentTimer.start(anyString(), anyString()))
+        .thenReturn(CompletableFuture.completedFuture(mock(PersistentTimer.Sample.class)));
 
     AccountsHelper.setupMockUpdate(accountsManager);
   }
@@ -955,6 +960,8 @@ class DeviceControllerTest {
         .waitForNewLinkedDevice(eq(AuthHelper.VALID_UUID), eq(AuthHelper.VALID_DEVICE), eq(tokenIdentifier), any()))
         .thenReturn(CompletableFuture.completedFuture(Optional.of(deviceInfo)));
 
+    when(rateLimiter.validateAsync(AuthHelper.VALID_UUID)).thenReturn(CompletableFuture.completedFuture(null));
+
     try (final Response response = resources.getJerseyTest()
         .target("/v1/devices/wait_for_linked_device/" + tokenIdentifier)
         .request()
@@ -979,6 +986,8 @@ class DeviceControllerTest {
         .waitForNewLinkedDevice(eq(AuthHelper.VALID_UUID), eq(AuthHelper.VALID_DEVICE), eq(tokenIdentifier), any()))
         .thenReturn(CompletableFuture.completedFuture(Optional.empty()));
 
+    when(rateLimiter.validateAsync(AuthHelper.VALID_UUID)).thenReturn(CompletableFuture.completedFuture(null));
+
     try (final Response response = resources.getJerseyTest()
         .target("/v1/devices/wait_for_linked_device/" + tokenIdentifier)
         .request()
@@ -996,6 +1005,8 @@ class DeviceControllerTest {
     when(accountsManager
         .waitForNewLinkedDevice(eq(AuthHelper.VALID_UUID), eq(AuthHelper.VALID_DEVICE), eq(tokenIdentifier), any()))
         .thenReturn(CompletableFuture.failedFuture(new IllegalArgumentException()));
+
+    when(rateLimiter.validateAsync(AuthHelper.VALID_UUID)).thenReturn(CompletableFuture.completedFuture(null));
 
     try (final Response response = resources.getJerseyTest()
         .target("/v1/devices/wait_for_linked_device/" + tokenIdentifier)
@@ -1042,10 +1053,11 @@ class DeviceControllerTest {
   }
 
   @Test
-  void waitForLinkedDeviceRateLimited() throws RateLimitExceededException {
+  void waitForLinkedDeviceRateLimited() {
     final String tokenIdentifier = Base64.getUrlEncoder().withoutPadding().encodeToString(new byte[32]);
 
-    doThrow(new RateLimitExceededException(null)).when(rateLimiter).validate(AuthHelper.VALID_UUID);
+    when(rateLimiter.validateAsync(AuthHelper.VALID_UUID))
+        .thenReturn(CompletableFuture.failedFuture(new RateLimitExceededException(null)));
 
     try (final Response response = resources.getJerseyTest()
         .target("/v1/devices/wait_for_linked_device/" + tokenIdentifier)
