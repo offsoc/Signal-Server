@@ -110,7 +110,6 @@ import org.whispersystems.textsecuregcm.controllers.AccountControllerV2;
 import org.whispersystems.textsecuregcm.controllers.ArchiveController;
 import org.whispersystems.textsecuregcm.controllers.AttachmentControllerV4;
 import org.whispersystems.textsecuregcm.controllers.CallLinkController;
-import org.whispersystems.textsecuregcm.controllers.CallRoutingController;
 import org.whispersystems.textsecuregcm.controllers.CallRoutingControllerV2;
 import org.whispersystems.textsecuregcm.controllers.CertificateController;
 import org.whispersystems.textsecuregcm.controllers.ChallengeController;
@@ -165,10 +164,12 @@ import org.whispersystems.textsecuregcm.jetty.JettyHttpConfigurationCustomizer;
 import org.whispersystems.textsecuregcm.keytransparency.KeyTransparencyServiceClient;
 import org.whispersystems.textsecuregcm.limits.CardinalityEstimator;
 import org.whispersystems.textsecuregcm.limits.MessageDeliveryLoopMonitor;
+import org.whispersystems.textsecuregcm.limits.NoopMessageDeliveryLoopMonitor;
 import org.whispersystems.textsecuregcm.limits.PushChallengeManager;
 import org.whispersystems.textsecuregcm.limits.RateLimitByIpFilter;
 import org.whispersystems.textsecuregcm.limits.RateLimitChallengeManager;
 import org.whispersystems.textsecuregcm.limits.RateLimiters;
+import org.whispersystems.textsecuregcm.limits.RedisMessageDeliveryLoopMonitor;
 import org.whispersystems.textsecuregcm.mappers.CompletionExceptionMapper;
 import org.whispersystems.textsecuregcm.mappers.DeviceLimitExceededExceptionMapper;
 import org.whispersystems.textsecuregcm.mappers.GrpcStatusRuntimeExceptionMapper;
@@ -656,7 +657,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     Subscriptions subscriptions = new Subscriptions(
         config.getDynamoDbTables().getSubscriptions().getTableName(), dynamoDbAsyncClient);
     MessageDeliveryLoopMonitor messageDeliveryLoopMonitor =
-        new MessageDeliveryLoopMonitor(rateLimitersCluster);
+        config.logMessageDeliveryLoops() ? new RedisMessageDeliveryLoopMonitor(rateLimitersCluster) : new NoopMessageDeliveryLoopMonitor();
 
     disconnectionRequestManager.addListener(webSocketConnectionEventManager);
 
@@ -1116,7 +1117,6 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new AttachmentControllerV4(rateLimiters, gcsAttachmentGenerator, tusAttachmentGenerator,
             experimentEnrollmentManager),
         new ArchiveController(backupAuthManager, backupManager),
-        new CallRoutingController(rateLimiters, callRouter, turnTokenGenerator, experimentEnrollmentManager, cloudflareTurnCredentialsManager),
         new CallRoutingControllerV2(rateLimiters, callRouter, turnTokenGenerator, experimentEnrollmentManager, cloudflareTurnCredentialsManager),
         new CallLinkController(rateLimiters, callingGenericZkSecretParams),
         new CertificateController(new CertificateGenerator(config.getDeliveryCertificate().certificate().value(),
