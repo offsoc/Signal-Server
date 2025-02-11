@@ -59,6 +59,7 @@ import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.annotation.Nullable;
@@ -166,7 +167,6 @@ public class MessageController {
   private static final String OUTGOING_MESSAGE_LIST_SIZE_BYTES_DISTRIBUTION_NAME = name(MessageController.class, "outgoingMessageListSizeBytes");
   private static final String RATE_LIMITED_MESSAGE_COUNTER_NAME = name(MessageController.class, "rateLimitedMessage");
 
-  private static final String REJECT_INVALID_ENVELOPE_TYPE = name(MessageController.class, "rejectInvalidEnvelopeType");
   private static final String SEND_MESSAGE_LATENCY_TIMER_NAME = MetricsUtil.name(MessageController.class, "sendMessageLatency");
 
   private static final String EPHEMERAL_TAG_NAME = "ephemeral";
@@ -174,7 +174,6 @@ public class MessageController {
   private static final String AUTH_TYPE_TAG_NAME = "authType";
   private static final String SENDER_COUNTRY_TAG_NAME = "senderCountry";
   private static final String RATE_LIMIT_REASON_TAG_NAME = "rateLimitReason";
-  private static final String ENVELOPE_TYPE_TAG_NAME = "envelopeType";
   private static final String IDENTITY_TYPE_TAG_NAME = "identityType";
   private static final String ENDPOINT_TYPE_TAG_NAME = "endpoint";
 
@@ -191,7 +190,7 @@ public class MessageController {
   private static final String ENDPOINT_TYPE_MULTI = "multi";
 
   @VisibleForTesting
-  static final long MAX_MESSAGE_SIZE = DataSize.kibibytes(256).toBytes();
+  static final int MAX_MESSAGE_SIZE = (int) DataSize.kibibytes(256).toBytes();
   private static final long LARGE_MESSAGE_SIZE = DataSize.kibibytes(8).toBytes();
 
   // The Signal desktop client (really, JavaScript in general) can handle message timestamps at most 100,000,000 days
@@ -331,14 +330,9 @@ public class MessageController {
       int totalContentLength = 0;
 
       for (final IncomingMessage message : messages.messages()) {
-        int contentLength = 0;
+        final int contentLength = decodedSize(message.content());
 
-        if (StringUtils.isNotEmpty(message.content())) {
-          contentLength += message.content().length();
-        }
-
-        validateContentLength(contentLength, false, userAgent);
-        validateEnvelopeType(message.type(), userAgent);
+        validateContentLength(contentLength, false, isSyncMessage, isStory, userAgent);
 
         totalContentLength += contentLength;
       }
@@ -475,7 +469,10 @@ public class MessageController {
           Deliver a common-payload message to multiple recipients.
           An unidentifed-access key for all recipients must be provided, unless the message is a story.
           """)
-  @ApiResponse(responseCode="200", description="Message was successfully sent to all recipients", useReturnTypeSchema=true)
+  @ApiResponse(
+      responseCode="200",
+      description="Message was successfully sent",
+      content = @Content(schema = @Schema(implementation = SendMultiRecipientMessageResponse.class)))
   @ApiResponse(responseCode="400", description="The envelope specified delivery to the same recipient device multiple times")
   @ApiResponse(
       responseCode="401",
@@ -526,7 +523,7 @@ public class MessageController {
 
     // Verify that the message isn't too large before performing more expensive validations
     multiRecipientMessage.getRecipients().values().forEach(recipient ->
-        validateContentLength(multiRecipientMessage.messageSizeForRecipient(recipient), true, userAgent));
+        validateContentLength(multiRecipientMessage.messageSizeForRecipient(recipient), true, false, isStory, userAgent));
 
     // Check that the request is well-formed and doesn't contain repeated entries for the same device for the same
     // recipient
@@ -578,7 +575,7 @@ public class MessageController {
 
               return Mono.fromFuture(() -> accountsManager.getByServiceIdentifierAsync(serviceIdentifier))
                   .flatMap(Mono::justOrEmpty)
-                  .switchIfEmpty(isStory ? Mono.empty() : Mono.error(NotFoundException::new))
+                  .switchIfEmpty(isStory || groupSendToken != null ? Mono.empty() : Mono.error(NotFoundException::new))
                   .map(account -> Tuples.of(serviceIdAndRecipient.getValue(), account));
             }, MAX_FETCH_ACCOUNT_CONCURRENCY)
             .collectMap(Tuple2::getT1, Tuple2::getT2)
@@ -677,12 +674,25 @@ public class MessageController {
     }
 
     try {
-      messageSender.sendMultiRecipientMessage(multiRecipientMessage, resolvedRecipients, timestamp, isStory, online, isUrgent).get();
+      if (!resolvedRecipients.isEmpty()) {
+        messageSender.sendMultiRecipientMessage(multiRecipientMessage, resolvedRecipients, timestamp, isStory, online, isUrgent).get();
+      }
+
+      final List<ServiceIdentifier> unresolvedRecipientServiceIds;
+      if (AUTH_TYPE_GROUP_SEND_TOKEN.equals(authType)) {
+        unresolvedRecipientServiceIds = multiRecipientMessage.getRecipients().entrySet().stream()
+            .filter(entry -> !resolvedRecipients.containsKey(entry.getValue()))
+            .map(entry -> ServiceIdentifier.fromLibsignal(entry.getKey()))
+            .toList();
+      } else {
+        unresolvedRecipientServiceIds = List.of();
+      }
 
       multiRecipientMessage.getRecipients().forEach((serviceId, recipient) -> {
         if (!resolvedRecipients.containsKey(recipient)) {
-          // We skipped sending to this recipient because we're sending a story and couldn't resolve the recipient to
-          // an existing account; don't increment the counter for this recipient.
+          // We skipped sending to this recipient because we couldn't resolve the recipient to an
+          // existing account; don't increment the counter for this recipient. If the client was
+          // using a GSE, track the missing recipients to include in the response.
           return;
         }
 
@@ -701,6 +711,8 @@ public class MessageController {
                 Tag.of(IDENTITY_TYPE_TAG_NAME, identityType)))
             .increment(recipient.getDevices().length);
       });
+
+      return Response.ok(new SendMultiRecipientMessageResponse(unresolvedRecipientServiceIds)).build();
     } catch (InterruptedException e) {
       logger.error("interrupted while delivering multi-recipient messages", e);
       throw new InternalServerErrorException("interrupted during delivery");
@@ -711,7 +723,6 @@ public class MessageController {
       logger.error("partial failure while delivering multi-recipient messages", e.getCause());
       throw new InternalServerErrorException("failure during delivery");
     }
-    return Response.ok(new SendMultiRecipientMessageResponse(Collections.emptyList())).build();
   }
 
   private void checkGroupSendToken(
@@ -919,36 +930,52 @@ public class MessageController {
     }
   }
 
-  private void validateContentLength(final int contentLength, final boolean multiRecipientMessage, final String userAgent) {
+  private void validateContentLength(final int contentLength,
+      final boolean isMultiRecipientMessage,
+      final boolean isSyncMessage,
+      final boolean isStory,
+      final String userAgent) {
+
     final boolean oversize = contentLength > MAX_MESSAGE_SIZE;
 
     DistributionSummary.builder(CONTENT_SIZE_DISTRIBUTION_NAME)
         .tags(Tags.of(UserAgentTagUtil.getPlatformTag(userAgent),
             Tag.of("oversize", String.valueOf(oversize)),
-            Tag.of("multiRecipientMessage", String.valueOf(multiRecipientMessage))))
+            Tag.of("multiRecipientMessage", String.valueOf(isMultiRecipientMessage)),
+            Tag.of("syncMessage", String.valueOf(isSyncMessage)),
+            Tag.of("story", String.valueOf(isStory))))
         .publishPercentileHistogram(true)
         .register(Metrics.globalRegistry)
         .record(contentLength);
 
     if (oversize) {
-      Metrics.counter(REJECT_OVERSIZE_MESSAGE_COUNTER, Tags.of(UserAgentTagUtil.getPlatformTag(userAgent)))
+      Metrics.counter(REJECT_OVERSIZE_MESSAGE_COUNTER, Tags.of(UserAgentTagUtil.getPlatformTag(userAgent),
+              Tag.of("multiRecipientMessage", String.valueOf(isMultiRecipientMessage)),
+              Tag.of("syncMessage", String.valueOf(isSyncMessage)),
+              Tag.of("story", String.valueOf(isStory))))
           .increment();
       throw new WebApplicationException(Status.REQUEST_ENTITY_TOO_LARGE);
     }
     if (contentLength > LARGE_MESSAGE_SIZE) {
       Metrics.counter(
           LARGE_BUT_NOT_OVERSIZE_MESSAGE_COUNTER,
-          Tags.of(UserAgentTagUtil.getPlatformTag(userAgent), Tag.of("multiRecipientMessage", String.valueOf(multiRecipientMessage))))
+          Tags.of(UserAgentTagUtil.getPlatformTag(userAgent), Tag.of("multiRecipientMessage", String.valueOf(isMultiRecipientMessage))))
           .increment();
     }      
   }
 
-  private void validateEnvelopeType(final int type, final String userAgent) {
-    if (type == Type.SERVER_DELIVERY_RECEIPT_VALUE) {
-      Metrics.counter(REJECT_INVALID_ENVELOPE_TYPE,
-              Tags.of(UserAgentTagUtil.getPlatformTag(userAgent), Tag.of(ENVELOPE_TYPE_TAG_NAME, String.valueOf(type))))
-          .increment();
-      throw new BadRequestException("reserved envelope type");
+  @VisibleForTesting
+  static int decodedSize(final String base64) {
+    final int padding;
+
+    if (StringUtils.endsWith(base64, "==")) {
+      padding = 2;
+    } else if (StringUtils.endsWith(base64, "=")) {
+      padding = 1;
+    } else {
+      padding = 0;
     }
+
+    return ((StringUtils.length(base64) - padding) * 3) / 4;
   }
 }
