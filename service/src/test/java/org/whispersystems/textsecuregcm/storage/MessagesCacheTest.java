@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertIterableEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -491,43 +492,64 @@ class MessagesCacheTest {
     }
 
     @Test
-    void testMessagesToPersistReactive() {
+    void testEstimatePersistedQueueSize() {
       final UUID destinationUuid = UUID.randomUUID();
       final ServiceIdentifier serviceId = new AciServiceIdentifier(destinationUuid);
       final byte deviceId = 1;
 
-      final List<MessageProtos.Envelope> expected = IntStream.range(0, 100)
-          .mapToObj(i -> {
-            if (i % 3 == 0) {
-              final SealedSenderMultiRecipientMessage mrm = generateRandomMrmMessage(serviceId, deviceId);
-              byte[] sharedMrmDataKey = messagesCache.insertSharedMultiRecipientMessagePayload(mrm).join();
-              return generateRandomMessage(UUID.randomUUID(), serviceId, true)
-                  .toBuilder()
-                  // clear some things added by the helper
-                  .clearContent()
-                  .setSharedMrmKey(ByteString.copyFrom(sharedMrmDataKey))
-                  .build();
-            } else if (i % 13 == 0) {
-              return generateRandomMessage(UUID.randomUUID(), serviceId, true).toBuilder().setEphemeral(true).build();
-            } else {
-              return generateRandomMessage(UUID.randomUUID(), serviceId, true);
-            }
-          })
-          .filter(envelope -> !envelope.getEphemeral())
-          .toList();
+      // Should count all non-ephemeral, non-stale message bytes
+      long expectedQueueSize = 0L;
+      for (int i = 0; i < 400; i++) {
+        final MessageProtos.Envelope messageToInsert = switch (i % 4) {
+          // An MRM message
+          case 0 -> {
 
-      for (MessageProtos.Envelope envelope : expected) {
-        messagesCache.insert(UUID.fromString(envelope.getServerGuid()), destinationUuid, deviceId, envelope).join();
+            // First generate a random MRM message
+            final SealedSenderMultiRecipientMessage mrm = generateRandomMrmMessage(serviceId, deviceId);
+            final SealedSenderMultiRecipientMessage.Recipient recepient = mrm.getRecipients()
+                .get(serviceId.toLibsignal());
+
+            // Calculate the size of a message that has the shared content in it
+            final MessageProtos.Envelope message = generateRandomMessage(UUID.randomUUID(), serviceId, true)
+                .toBuilder()
+                .setContent(ByteString.copyFrom(mrm.messageForRecipient(recepient)))
+                .build();
+            expectedQueueSize += message.getSerializedSize();
+            byte[] sharedMrmDataKey = messagesCache.insertSharedMultiRecipientMessagePayload(mrm).join();
+
+            // Insert the MRM message without the content
+            yield message
+                .toBuilder()
+                .clearContent()
+                .setSharedMrmKey(ByteString.copyFrom(sharedMrmDataKey))
+                .build();
+          }
+
+          // A stale MRM message
+          case 1 ->
+            generateRandomMessage(UUID.randomUUID(), serviceId, true)
+                .toBuilder()
+                // clear some things added by the helper
+                .clearContent()
+                .setSharedMrmKey(MessagesCache.STALE_MRM_KEY)
+                .build();
+
+          // An ephemeral message
+          case 2 -> generateRandomMessage(UUID.randomUUID(), serviceId, true).toBuilder().setEphemeral(true).build();
+
+          // A standardard message
+          case 3 -> {
+            final MessageProtos.Envelope message = generateRandomMessage(UUID.randomUUID(), serviceId, true);
+            expectedQueueSize += message.getSerializedSize();
+            yield message;
+          }
+
+          default -> throw new IllegalStateException();
+        };
+        messagesCache.insert(UUID.fromString(messageToInsert.getServerGuid()), destinationUuid, deviceId, messageToInsert).join();
       }
-
-      final List<MessageProtos.Envelope> actual = messagesCache
-          .getMessagesToPersistReactive(destinationUuid, deviceId, 7).collectList().block();
-
-      assertEquals(expected.size(), actual.size());
-      for (int i = 0; i < actual.size(); i++) {
-        assertNotNull(actual.get(i).getContent());
-        assertEquals(actual.get(i).getServerGuid(), expected.get(i).getServerGuid());
-      }
+      long actualQueueSize = messagesCache.estimatePersistedQueueSizeBytes(destinationUuid, deviceId).join();
+      assertEquals(expectedQueueSize, actualQueueSize);
     }
 
     @ParameterizedTest

@@ -385,8 +385,17 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
       if (customer == null) {
         throw ExceptionUtils.wrap(new IOException("no customer record found for id " + customerId));
       }
+      if (StringUtils.isBlank(customer.getId()) || (!customer.getId().equals(customerId))) {
+        logger.error("customer ID returned by Stripe ({}) did not match query ({})",  customerId, customer.getSubscriptions());
+        throw ExceptionUtils.wrap(new IOException("unexpected customer ID returned by Stripe"));
+      }
       return listNonCanceledSubscriptions(customer);
     }).thenCompose(subscriptions -> {
+      if (subscriptions.stream()
+          .anyMatch(subscription -> !subscription.getCustomer().equals(customerId))) {
+        logger.error("Subscription did not match expected customer ID: {}",  customerId);
+        throw ExceptionUtils.wrap( new IOException("mismatched customer ID"));
+      }
       @SuppressWarnings("unchecked")
       CompletableFuture<Subscription>[] futures = (CompletableFuture<Subscription>[]) subscriptions.stream()
           .map(this::endSubscription).toArray(CompletableFuture[]::new);
@@ -401,7 +410,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
           .build();
       try {
         return Lists.newArrayList(
-            stripeClient.subscriptions().list(params, commonOptions()).autoPagingIterable(null, commonOptions()));
+            stripeClient.subscriptions().list(params, commonOptions()).autoPagingIterable());
       } catch (StripeException e) {
         throw new CompletionException(e);
       }
@@ -450,7 +459,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
           try {
             final StripeCollection<SubscriptionItem> subscriptionItems = stripeClient.subscriptionItems().list(
                 SubscriptionItemListParams.builder().setSubscription(subscription.getId()).build(), commonOptions());
-            return Lists.newArrayList(subscriptionItems.autoPagingIterable(null, commonOptions()));
+            return Lists.newArrayList(subscriptionItems.autoPagingIterable());
 
           } catch (final StripeException e) {
             throw new CompletionException(e);
@@ -519,7 +528,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
           .build();
       try {
         ArrayList<Invoice> invoices = Lists.newArrayList(stripeClient.invoices().list(params, commonOptions())
-                .autoPagingIterable(null, commonOptions()));
+                .autoPagingIterable());
         invoices.sort(Comparator.comparingLong(Invoice::getCreated).reversed());
         return invoices;
       } catch (StripeException e) {
@@ -677,7 +686,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
           try {
             final StripeCollection<InvoiceLineItem> lineItems = stripeClient.invoices().lineItems()
                 .list(invoice.getId(), commonOptions());
-            return Lists.newArrayList(lineItems.autoPagingIterable(null, commonOptions()));
+            return Lists.newArrayList(lineItems.autoPagingIterable());
           } catch (final StripeException e) {
             throw new CompletionException(e);
           }

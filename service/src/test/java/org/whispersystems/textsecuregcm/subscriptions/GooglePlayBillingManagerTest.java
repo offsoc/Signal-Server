@@ -15,6 +15,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.google.api.client.http.HttpResponseException;
 import com.google.api.services.androidpublisher.AndroidPublisher;
 import com.google.api.services.androidpublisher.model.AutoRenewingPlan;
 import com.google.api.services.androidpublisher.model.BasePlan;
@@ -33,11 +34,14 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.whispersystems.textsecuregcm.storage.SubscriptionException;
 import org.whispersystems.textsecuregcm.util.CompletableFutureTestUtil;
 import org.whispersystems.textsecuregcm.util.MockUtils;
@@ -178,6 +182,16 @@ class GooglePlayBillingManagerTest {
   }
 
   @Test
+  public void cancelMissingSubscription() throws IOException {
+    final HttpResponseException mockException = mock(HttpResponseException.class);
+    when(mockException.getStatusCode()).thenReturn(404);
+    when(subscriptionsv2Get.execute()).thenThrow(mockException);
+    assertThatNoException().isThrownBy(() ->
+        googlePlayBillingManager.cancelAllActiveSubscriptions(PURCHASE_TOKEN).join());
+    verifyNoInteractions(cancel);
+  }
+
+  @Test
   public void getReceiptUnacknowledged() throws IOException {
     when(subscriptionsv2Get.execute()).thenReturn(new SubscriptionPurchaseV2()
         .setAcknowledgementState(GooglePlayBillingManager.AcknowledgementState.PENDING.apiString())
@@ -255,6 +269,24 @@ class GooglePlayBillingManagerTest {
     assertThat(info.level()).isEqualTo(201L);
     assertThat(info.cancelAtPeriodEnd()).isTrue();
 
+  }
+
+  public static Stream<Arguments> tokenErrors() {
+    return Stream.of(
+        Arguments.of(404, SubscriptionException.NotFound.class),
+        Arguments.of(410, SubscriptionException.NotFound.class),
+        Arguments.of(400, HttpResponseException.class)
+    );
+  }
+  @ParameterizedTest
+  @MethodSource
+  public void tokenErrors(final int httpStatus, Class<? extends Exception> expected) throws IOException {
+    final HttpResponseException mockException = mock(HttpResponseException.class);
+    when(mockException.getStatusCode()).thenReturn(httpStatus);
+    when(subscriptionsv2Get.execute()).thenThrow(mockException);
+
+    CompletableFutureTestUtil.assertFailsWithCause(expected,
+        googlePlayBillingManager.getSubscriptionInformation(PURCHASE_TOKEN));
   }
 
 }
