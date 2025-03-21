@@ -44,19 +44,11 @@ public class DynamicConfiguration {
 
   @JsonProperty
   @Valid
-  private DynamicTurnConfiguration turn = new DynamicTurnConfiguration();
-
-  @JsonProperty
-  @Valid
   DynamicMessagePersisterConfiguration messagePersister = new DynamicMessagePersisterConfiguration();
 
   @JsonProperty
   @Valid
   DynamicRateLimitPolicy rateLimitPolicy = new DynamicRateLimitPolicy(false);
-
-  @JsonProperty
-  @Valid
-  DynamicInboundMessageByteLimitConfiguration inboundMessageByteLimit = new DynamicInboundMessageByteLimitConfiguration(true);
 
   @JsonProperty
   @Valid
@@ -104,20 +96,12 @@ public class DynamicConfiguration {
     return captcha;
   }
 
-  public DynamicTurnConfiguration getTurnConfiguration() {
-    return turn;
-  }
-
   public DynamicMessagePersisterConfiguration getMessagePersisterConfiguration() {
     return messagePersister;
   }
 
   public DynamicRateLimitPolicy getRateLimitPolicy() {
     return rateLimitPolicy;
-  }
-
-  public DynamicInboundMessageByteLimitConfiguration getInboundMessageByteLimitConfiguration() {
-    return inboundMessageByteLimit;
   }
 
   public DynamicRegistrationConfiguration getRegistrationConfiguration() {
