@@ -5,15 +5,12 @@
 package org.whispersystems.textsecuregcm.storage;
 
 import com.google.protobuf.ByteString;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 import org.apache.commons.lang3.ObjectUtils;
-import org.apache.commons.lang3.StringUtils;
 import org.signal.libsignal.protocol.IdentityKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,6 +22,7 @@ import org.whispersystems.textsecuregcm.entities.KEMSignedPreKey;
 import org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
 import org.whispersystems.textsecuregcm.identity.AciServiceIdentifier;
 import org.whispersystems.textsecuregcm.push.MessageSender;
+import org.whispersystems.textsecuregcm.push.MessageTooLargeException;
 import org.whispersystems.textsecuregcm.util.DestinationDeviceValidator;
 
 public class ChangeNumberManager {
@@ -45,8 +43,9 @@ public class ChangeNumberManager {
       @Nullable final Map<Byte, ECSignedPreKey> deviceSignedPreKeys,
       @Nullable final Map<Byte, KEMSignedPreKey> devicePqLastResortPreKeys,
       @Nullable final List<IncomingMessage> deviceMessages,
-      @Nullable final Map<Byte, Integer> pniRegistrationIds)
-      throws InterruptedException, MismatchedDevicesException, StaleDevicesException {
+      @Nullable final Map<Byte, Integer> pniRegistrationIds,
+      @Nullable final String senderUserAgent)
+      throws InterruptedException, MismatchedDevicesException, StaleDevicesException, MessageTooLargeException {
 
     if (ObjectUtils.allNotNull(pniIdentityKey, deviceSignedPreKeys, deviceMessages, pniRegistrationIds)) {
       // AccountsManager validates the device set on deviceSignedPreKeys and pniRegistrationIds
@@ -66,14 +65,14 @@ public class ChangeNumberManager {
       if (pniIdentityKey == null) {
         return account;
       }
-      return updatePniKeys(account, pniIdentityKey, deviceSignedPreKeys, devicePqLastResortPreKeys, deviceMessages, pniRegistrationIds);
+      return updatePniKeys(account, pniIdentityKey, deviceSignedPreKeys, devicePqLastResortPreKeys, deviceMessages, pniRegistrationIds, senderUserAgent);
     }
 
     final Account updatedAccount = accountsManager.changeNumber(
         account, number, pniIdentityKey, deviceSignedPreKeys, devicePqLastResortPreKeys, pniRegistrationIds);
 
     if (deviceMessages != null) {
-      sendDeviceMessages(updatedAccount, deviceMessages);
+      sendDeviceMessages(updatedAccount, deviceMessages, senderUserAgent);
     }
 
     return updatedAccount;
@@ -84,7 +83,9 @@ public class ChangeNumberManager {
       final Map<Byte, ECSignedPreKey> deviceSignedPreKeys,
       @Nullable final Map<Byte, KEMSignedPreKey> devicePqLastResortPreKeys,
       final List<IncomingMessage> deviceMessages,
-      final Map<Byte, Integer> pniRegistrationIds) throws MismatchedDevicesException, StaleDevicesException {
+      final Map<Byte, Integer> pniRegistrationIds,
+      final String senderUserAgent) throws MismatchedDevicesException, StaleDevicesException, MessageTooLargeException {
+
     validateDeviceMessages(account, deviceMessages);
 
     // Don't try to be smart about ignoring unnecessary retries. If we make literally no change we will skip the ddb
@@ -92,7 +93,7 @@ public class ChangeNumberManager {
     final Account updatedAccount = accountsManager.updatePniKeys(
         account, pniIdentityKey, deviceSignedPreKeys, devicePqLastResortPreKeys, pniRegistrationIds);
 
-    sendDeviceMessages(updatedAccount, deviceMessages);
+    sendDeviceMessages(updatedAccount, deviceMessages, senderUserAgent);
     return updatedAccount;
   }
 
@@ -113,18 +114,28 @@ public class ChangeNumberManager {
         false);
   }
 
-  private void sendDeviceMessages(final Account account, final List<IncomingMessage> deviceMessages) {
+  private void sendDeviceMessages(final Account account,
+      final List<IncomingMessage> deviceMessages,
+      final String senderUserAgent) throws MessageTooLargeException {
+
+    for (final IncomingMessage message : deviceMessages) {
+      MessageSender.validateContentLength(message.content().length,
+          false,
+          true,
+          false,
+          senderUserAgent);
+    }
+
     try {
       final long serverTimestamp = System.currentTimeMillis();
 
       messageSender.sendMessages(account, deviceMessages.stream()
-          .filter(message -> getMessageContent(message).isPresent())
           .collect(Collectors.toMap(IncomingMessage::destinationDeviceId, message -> Envelope.newBuilder()
               .setType(Envelope.Type.forNumber(message.type()))
               .setClientTimestamp(serverTimestamp)
               .setServerTimestamp(serverTimestamp)
               .setDestinationServiceId(new AciServiceIdentifier(account.getUuid()).toServiceIdentifierString())
-              .setContent(ByteString.copyFrom(getMessageContent(message).orElseThrow()))
+              .setContent(ByteString.copyFrom(message.content()))
               .setSourceServiceId(new AciServiceIdentifier(account.getUuid()).toServiceIdentifierString())
               .setSourceDevice(Device.PRIMARY_ID)
               .setUpdatedPni(account.getPhoneNumberIdentifier().toString())
@@ -134,20 +145,6 @@ public class ChangeNumberManager {
     } catch (final RuntimeException e) {
       logger.warn("Changed number but could not send all device messages on {}", account.getUuid(), e);
       throw e;
-    }
-  }
-
-  private static Optional<byte[]> getMessageContent(final IncomingMessage message) {
-    if (StringUtils.isEmpty(message.content())) {
-      logger.warn("Message has no content");
-      return Optional.empty();
-    }
-
-    try {
-      return Optional.of(Base64.getDecoder().decode(message.content()));
-    } catch (final IllegalArgumentException e) {
-      logger.warn("Failed to parse message content", e);
-      return Optional.empty();
     }
   }
 }

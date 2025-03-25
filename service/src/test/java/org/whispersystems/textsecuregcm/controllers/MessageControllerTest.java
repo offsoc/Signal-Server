@@ -29,7 +29,6 @@ import static org.mockito.Mockito.when;
 import static org.whispersystems.textsecuregcm.tests.util.JsonHelpers.asJson;
 import static org.whispersystems.textsecuregcm.tests.util.JsonHelpers.jsonFixture;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.protobuf.ByteString;
 import io.dropwizard.auth.AuthValueFactoryProvider;
 import io.dropwizard.testing.junit5.DropwizardExtensionsSupport;
@@ -490,7 +489,7 @@ class MessageControllerTest {
       // `long`) instead of the validation layer, we get a 400 instead of a 422
       "99999999999999999999999999999999999, 400"
   })
-  void testSingleDeviceExtremeTimestamp(final String timestamp, final int expectedStatus) throws JsonProcessingException {
+  void testSingleDeviceExtremeTimestamp(final String timestamp, final int expectedStatus) {
     final String jsonTemplate = """
         {
             "timestamp" : %s,
@@ -607,9 +606,7 @@ class MessageControllerTest {
 
       assertEquals(3, envelopeCaptor.getValue().size());
 
-      envelopeCaptor.getValue().values().forEach(envelope -> {
-        assertTrue(envelope.getUrgent());
-      });
+      envelopeCaptor.getValue().values().forEach(envelope -> assertTrue(envelope.getUrgent()));
     }
   }
 
@@ -633,9 +630,7 @@ class MessageControllerTest {
 
       assertEquals(3, envelopeCaptor.getValue().size());
 
-      envelopeCaptor.getValue().values().forEach(envelope -> {
-        assertFalse(envelope.getUrgent());
-      });
+      envelopeCaptor.getValue().values().forEach(envelope -> assertFalse(envelope.getUrgent()));
     }
   }
 
@@ -948,7 +943,7 @@ class MessageControllerTest {
     final UUID senderAci = UUID.randomUUID();
     final UUID senderPni = UUID.randomUUID();
     final String userAgent = "user-agent";
-    UUID messageGuid = UUID.randomUUID();
+    final UUID messageGuid = UUID.randomUUID();
 
     final Account account = mock(Account.class);
     when(account.getUuid()).thenReturn(senderAci);
@@ -958,8 +953,6 @@ class MessageControllerTest {
     when(accountsManager.getByAccountIdentifier(senderAci)).thenReturn(Optional.empty());
     when(accountsManager.findRecentlyDeletedPhoneNumberIdentifier(senderAci)).thenReturn(Optional.of(senderPni));
     when(phoneNumberIdentifiers.getPhoneNumber(senderPni)).thenReturn(CompletableFuture.completedFuture(List.of(senderNumber)));
-
-    messageGuid = UUID.randomUUID();
 
     try (final Response response =
         resources.getJerseyTest()
@@ -1086,7 +1079,7 @@ class MessageControllerTest {
 
   @Test
   void testValidateContentLength() {
-    final int contentLength = Math.toIntExact(MessageController.MAX_MESSAGE_SIZE + 1);
+    final int contentLength = Math.toIntExact(MessageSender.MAX_MESSAGE_SIZE + 1);
     final byte[] contentBytes = new byte[contentLength];
     Arrays.fill(contentBytes, (byte) 1);
 
@@ -1096,7 +1089,7 @@ class MessageControllerTest {
             .request()
             .header(HeaderUtils.UNIDENTIFIED_ACCESS_KEY, Base64.getEncoder().encodeToString(UNIDENTIFIED_ACCESS_BYTES))
             .put(Entity.entity(new IncomingMessageList(
-                    List.of(new IncomingMessage(1, (byte) 1, 1, Base64.getEncoder().encodeToString(contentBytes))), false, true,
+                    List.of(new IncomingMessage(1, (byte) 1, 1, contentBytes)), false, true,
                     System.currentTimeMillis()),
                 MediaType.APPLICATION_JSON_TYPE))) {
 
@@ -1641,15 +1634,5 @@ class MessageControllerTest {
     }
 
     return builder.build();
-  }
-
-  @Test
-  void decodedSize() {
-    for (int size = MessageController.MAX_MESSAGE_SIZE - 3; size <= MessageController.MAX_MESSAGE_SIZE + 3; size++) {
-      final byte[] bytes = TestRandomUtil.nextBytes(size);
-      final String base64Encoded = Base64.getEncoder().encodeToString(bytes);
-
-      assertEquals(bytes.length, MessageController.decodedSize(base64Encoded));
-    }
   }
 }
