@@ -7,12 +7,11 @@ package org.whispersystems.textsecuregcm.grpc;
 
 import com.google.protobuf.ByteString;
 import io.grpc.Status;
+import io.grpc.StatusException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.util.Arrays;
-import java.util.List;
-
 import org.signal.chat.keys.CheckIdentityKeyRequest;
 import org.signal.chat.keys.CheckIdentityKeyResponse;
 import org.signal.chat.keys.GetPreKeysAnonymousRequest;
@@ -52,16 +51,24 @@ public class KeysAnonymousGrpcService extends ReactorKeysAnonymousGrpc.KeysAnony
         : KeysGrpcHelper.ALL_DEVICES;
 
     return switch (request.getAuthorizationCase()) {
-      case GROUP_SEND_TOKEN ->
-          groupSendTokenUtil.checkGroupSendToken(request.getGroupSendToken(), List.of(serviceIdentifier))
-              .then(lookUpAccount(serviceIdentifier, Status.NOT_FOUND))
+      case GROUP_SEND_TOKEN -> {
+        try {
+          groupSendTokenUtil.checkGroupSendToken(request.getGroupSendToken(), serviceIdentifier);
+
+          yield lookUpAccount(serviceIdentifier, Status.NOT_FOUND)
               .flatMap(targetAccount -> KeysGrpcHelper.getPreKeys(targetAccount, serviceIdentifier.identityType(), deviceId, keysManager));
+        } catch (final StatusException e) {
+          yield Mono.error(e);
+        }
+      }
+
       case UNIDENTIFIED_ACCESS_KEY ->
           lookUpAccount(serviceIdentifier, Status.UNAUTHENTICATED)
               .flatMap(targetAccount ->
                   UnidentifiedAccessUtil.checkUnidentifiedAccess(targetAccount, request.getUnidentifiedAccessKey().toByteArray())
                   ? KeysGrpcHelper.getPreKeys(targetAccount, serviceIdentifier.identityType(), deviceId, keysManager)
                   : Mono.error(Status.UNAUTHENTICATED.asException()));
+
       default -> Mono.error(Status.INVALID_ARGUMENT.asException());
     };
   }

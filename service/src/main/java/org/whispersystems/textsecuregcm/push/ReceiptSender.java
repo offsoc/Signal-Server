@@ -7,6 +7,7 @@ package org.whispersystems.textsecuregcm.push;
 
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
@@ -15,6 +16,7 @@ import org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
 import org.whispersystems.textsecuregcm.identity.AciServiceIdentifier;
 import org.whispersystems.textsecuregcm.identity.ServiceIdentifier;
 import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
+import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.Device;
 
@@ -54,9 +56,21 @@ public class ReceiptSender {
                   .setUrgent(false)
                   .build();
 
+              final Map<Byte, Envelope> messagesByDeviceId = destinationAccount.getDevices().stream()
+                  .collect(Collectors.toMap(Device::getId, ignored -> message));
+
+              final Map<Byte, Integer> registrationIdsByDeviceId = destinationAccount.getDevices().stream()
+                  .collect(Collectors.toMap(Device::getId, device -> switch (destinationIdentifier.identityType()) {
+                    case ACI -> device.getRegistrationId();
+                    case PNI -> device.getPhoneNumberIdentityRegistrationId().orElseGet(device::getRegistrationId);
+                  }));
+
               try {
-                messageSender.sendMessages(destinationAccount, destinationAccount.getDevices().stream()
-                    .collect(Collectors.toMap(Device::getId, ignored -> message)));
+                messageSender.sendMessages(destinationAccount,
+                    destinationIdentifier,
+                    messagesByDeviceId,
+                    registrationIdsByDeviceId,
+                    UserAgentTagUtil.SERVER_UA);
               } catch (final Exception e) {
                 logger.warn("Could not send delivery receipt", e);
               }

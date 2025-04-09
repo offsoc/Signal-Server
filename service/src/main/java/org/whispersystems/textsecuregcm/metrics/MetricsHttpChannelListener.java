@@ -34,7 +34,7 @@ import org.whispersystems.textsecuregcm.util.logging.UriInfoUtil;
 
 /**
  * Gathers and reports HTTP request metrics at the Jetty container level, which sits above Jersey. In order to get
- * templated Jersey request paths, it implements {@link javax.ws.rs.container.ContainerResponseFilter}, in order to give
+ * templated Jersey request paths, it implements {@link jakarta.ws.rs.container.ContainerResponseFilter}, in order to give
  * itself access to the template. It is limited to {@link TrafficSource#HTTP} requests.
  * <p>
  * It implements {@link LifeCycle.Listener} without overriding methods, so that it can be an event listener that
@@ -137,15 +137,13 @@ public class MetricsHttpChannelListener implements HttpChannel.Listener, Contain
     tags.add(Tag.of(METHOD_TAG, requestInfo.method()));
     tags.add(Tag.of(STATUS_CODE_TAG, String.valueOf(requestInfo.statusCode())));
     tags.add(Tag.of(TRAFFIC_SOURCE_TAG, TrafficSource.HTTP.name().toLowerCase()));
-
-    final Tag platformTag = UserAgentTagUtil.getPlatformTag(requestInfo.userAgent());
-    tags.add(platformTag);
+    tags.addAll(UserAgentTagUtil.getLibsignalAndPlatformTags(requestInfo.userAgent()));
 
     meterRegistry.counter(REQUEST_COUNTER_NAME, tags).increment();
 
     UserAgentTagUtil.getClientVersionTag(requestInfo.userAgent(), clientReleaseManager).ifPresent(
         clientVersionTag -> meterRegistry.counter(REQUESTS_BY_VERSION_COUNTER_NAME,
-            Tags.of(clientVersionTag, platformTag)).increment());
+            Tags.of(clientVersionTag, UserAgentTagUtil.getPlatformTag(requestInfo.userAgent()))).increment());
   }
 
   @Override

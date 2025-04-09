@@ -8,10 +8,13 @@ package org.whispersystems.textsecuregcm.metrics;
 import io.micrometer.core.instrument.Tag;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import org.whispersystems.textsecuregcm.WhisperServerVersion;
 import org.whispersystems.textsecuregcm.storage.ClientReleaseManager;
 import org.whispersystems.textsecuregcm.util.ua.UnrecognizedUserAgentException;
 import org.whispersystems.textsecuregcm.util.ua.UserAgent;
 import org.whispersystems.textsecuregcm.util.ua.UserAgentUtil;
+import javax.annotation.Nullable;
 
 /**
  * Utility class for extracting platform/version metrics tags from User-Agent strings.
@@ -22,19 +25,30 @@ public class UserAgentTagUtil {
   public static final String VERSION_TAG = "clientVersion";
   public static final String LIBSIGNAL_TAG = "libsignal";
 
+  public static final String SERVER_UA =
+      String.format("Signal-Server/%s (%s)", WhisperServerVersion.getServerVersion(), UUID.randomUUID());
+
   private UserAgentTagUtil() {
   }
 
   public static Tag getPlatformTag(final String userAgentString) {
-    String platform;
 
-    try {
-      platform = UserAgentUtil.parseUserAgentString(userAgentString).getPlatform().name().toLowerCase();
-    } catch (final UnrecognizedUserAgentException e) {
-      platform = "unrecognized";
+    if (SERVER_UA.equals(userAgentString)) {
+      return Tag.of(PLATFORM_TAG, "server");
     }
 
-    return Tag.of(PLATFORM_TAG, platform);
+    UserAgent userAgent = null;
+
+    try {
+      userAgent = UserAgentUtil.parseUserAgentString(userAgentString);
+    } catch (final UnrecognizedUserAgentException ignored) {
+    }
+
+    return getPlatformTag(userAgent);
+  }
+
+  public static Tag getPlatformTag(@Nullable final UserAgent userAgent) {
+    return Tag.of(PLATFORM_TAG, userAgent != null ? userAgent.getPlatform().name().toLowerCase() : "unrecognized");
   }
 
   public static Optional<Tag> getClientVersionTag(final String userAgentString, final ClientReleaseManager clientReleaseManager) {

@@ -10,7 +10,6 @@ import com.codahale.metrics.annotation.Timed;
 import com.google.common.net.HttpHeaders;
 import io.dropwizard.auth.Auth;
 import io.micrometer.core.instrument.Metrics;
-import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.Timer.Sample;
@@ -44,14 +43,11 @@ import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.Response.Status;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -62,7 +58,6 @@ import javax.annotation.Nullable;
 import org.glassfish.jersey.server.ManagedAsync;
 import org.signal.libsignal.protocol.SealedSenderMultiRecipientMessage;
 import org.signal.libsignal.protocol.ServiceId;
-import org.signal.libsignal.protocol.util.Pair;
 import org.signal.libsignal.zkgroup.ServerSecretParams;
 import org.signal.libsignal.zkgroup.VerificationFailedException;
 import org.signal.libsignal.zkgroup.groupsend.GroupSendDerivedKeyPair;
@@ -81,13 +76,13 @@ import org.whispersystems.textsecuregcm.entities.IncomingMessage;
 import org.whispersystems.textsecuregcm.entities.IncomingMessageList;
 import org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
 import org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope.Type;
-import org.whispersystems.textsecuregcm.entities.MismatchedDevices;
+import org.whispersystems.textsecuregcm.entities.MismatchedDevicesResponse;
 import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntity;
 import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntityList;
 import org.whispersystems.textsecuregcm.entities.SendMessageResponse;
 import org.whispersystems.textsecuregcm.entities.SendMultiRecipientMessageResponse;
 import org.whispersystems.textsecuregcm.entities.SpamReport;
-import org.whispersystems.textsecuregcm.entities.StaleDevices;
+import org.whispersystems.textsecuregcm.entities.StaleDevicesResponse;
 import org.whispersystems.textsecuregcm.identity.AciServiceIdentifier;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.identity.ServiceIdentifier;
@@ -100,29 +95,25 @@ import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
 import org.whispersystems.textsecuregcm.providers.MultiRecipientMessageProvider;
 import org.whispersystems.textsecuregcm.push.MessageSender;
 import org.whispersystems.textsecuregcm.push.MessageTooLargeException;
+import org.whispersystems.textsecuregcm.push.MessageUtil;
 import org.whispersystems.textsecuregcm.push.PushNotificationManager;
 import org.whispersystems.textsecuregcm.push.PushNotificationScheduler;
 import org.whispersystems.textsecuregcm.push.ReceiptSender;
+import org.whispersystems.textsecuregcm.spam.MessageType;
+import org.whispersystems.textsecuregcm.spam.SpamCheckResult;
 import org.whispersystems.textsecuregcm.spam.SpamChecker;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.ClientReleaseManager;
-import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.storage.MessagesManager;
 import org.whispersystems.textsecuregcm.storage.PhoneNumberIdentifiers;
 import org.whispersystems.textsecuregcm.storage.ReportMessageManager;
-import org.whispersystems.textsecuregcm.util.DestinationDeviceValidator;
-import org.whispersystems.textsecuregcm.util.ExceptionUtils;
 import org.whispersystems.textsecuregcm.util.HeaderUtils;
 import org.whispersystems.textsecuregcm.util.Util;
 import org.whispersystems.textsecuregcm.websocket.WebSocketConnection;
 import org.whispersystems.websocket.WebsocketHeaders;
 import org.whispersystems.websocket.auth.ReadOnly;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
-import reactor.util.function.Tuple2;
-import reactor.util.function.Tuples;
 
 @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
 @Path("/v1/messages")
@@ -149,35 +140,27 @@ public class MessageController {
   private final MessageDeliveryLoopMonitor messageDeliveryLoopMonitor;
   private final Clock clock;
 
-  private static final int MAX_FETCH_ACCOUNT_CONCURRENCY = 8;
-
   private static final CompletableFuture<?>[] EMPTY_FUTURE_ARRAY = new CompletableFuture<?>[0];
 
-  private static final String SENT_MESSAGE_COUNTER_NAME = name(MessageController.class, "sentMessages");
   private static final String OUTGOING_MESSAGE_LIST_SIZE_BYTES_DISTRIBUTION_NAME = name(MessageController.class, "outgoingMessageListSizeBytes");
-  private static final String RATE_LIMITED_MESSAGE_COUNTER_NAME = name(MessageController.class, "rateLimitedMessage");
 
-  private static final String SEND_MESSAGE_LATENCY_TIMER_NAME = MetricsUtil.name(MessageController.class, "sendMessageLatency");
+  private static final Timer INDIVIDUAL_MESSAGE_LATENCY_TIMER;
+  private static final Timer MULTI_RECIPIENT_MESSAGE_LATENCY_TIMER;
 
-  private static final String EPHEMERAL_TAG_NAME = "ephemeral";
-  private static final String SENDER_TYPE_TAG_NAME = "senderType";
-  private static final String AUTH_TYPE_TAG_NAME = "authType";
-  private static final String SENDER_COUNTRY_TAG_NAME = "senderCountry";
-  private static final String RATE_LIMIT_REASON_TAG_NAME = "rateLimitReason";
-  private static final String IDENTITY_TYPE_TAG_NAME = "identityType";
-  private static final String ENDPOINT_TYPE_TAG_NAME = "endpoint";
+  static {
+    final String timerName = MetricsUtil.name(MessageController.class, "sendMessageLatency");
+    final String multiRecipientTagName = "multiRecipient";
 
-  private static final String SENDER_TYPE_IDENTIFIED = "identified";
-  private static final String SENDER_TYPE_UNIDENTIFIED = "unidentified";
-  private static final String SENDER_TYPE_SELF = "self";
+    INDIVIDUAL_MESSAGE_LATENCY_TIMER = Timer.builder(timerName)
+        .tags(multiRecipientTagName, "false")
+        .publishPercentileHistogram(true)
+        .register(Metrics.globalRegistry);
 
-  private static final String AUTH_TYPE_IDENTIFIED = "identified";
-  private static final String AUTH_TYPE_ACCESS_KEY = "accessKey";
-  private static final String AUTH_TYPE_GROUP_SEND_TOKEN = "groupSendToken";
-  private static final String AUTH_TYPE_STORY = "story";
-
-  private static final String ENDPOINT_TYPE_SINGLE = "single";
-  private static final String ENDPOINT_TYPE_MULTI = "multi";
+    MULTI_RECIPIENT_MESSAGE_LATENCY_TIMER = Timer.builder(timerName)
+        .tags(multiRecipientTagName, "true")
+        .publishPercentileHistogram(true)
+        .register(Metrics.globalRegistry);
+  }
 
   // The Signal desktop client (really, JavaScript in general) can handle message timestamps at most 100,000,000 days
   // past the epoch; please see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date#the_epoch_timestamps_and_invalid_date
@@ -185,6 +168,9 @@ public class MessageController {
   public static final long MAX_TIMESTAMP = 86_400_000L * 100_000_000L;
 
   private static final Duration NOTIFY_FOR_REMAINING_MESSAGES_DELAY = Duration.ofMinutes(1);
+
+  private static final SendMultiRecipientMessageResponse SEND_STORY_RESPONSE =
+      new SendMultiRecipientMessageResponse(Collections.emptyList());
 
   public MessageController(
       RateLimiters rateLimiters,
@@ -243,10 +229,10 @@ public class MessageController {
       description="The message is not a story and some the recipient service ID does not correspond to a registered Signal user")
   @ApiResponse(
       responseCode = "409", description = "Incorrect set of devices supplied for recipient",
-      content = @Content(schema = @Schema(implementation = MismatchedDevices.class)))
+      content = @Content(schema = @Schema(implementation = MismatchedDevicesResponse.class)))
   @ApiResponse(
       responseCode = "410", description = "Mismatched registration ids supplied for some recipient devices",
-      content = @Content(schema = @Schema(implementation = StaleDevices.class)))
+      content = @Content(schema = @Schema(implementation = StaleDevicesResponse.class)))
   @ApiResponse(
       responseCode="428",
       description="The sender should complete a challenge before proceeding")
@@ -271,176 +257,206 @@ public class MessageController {
 
       @Context final ContainerRequestContext context) throws RateLimitExceededException {
 
-    if (source.isEmpty() && accessKey.isEmpty() && groupSendToken == null && !isStory) {
-      throw new WebApplicationException(Status.UNAUTHORIZED);
-    }
-
     if (groupSendToken != null) {
       if (source.isPresent() || accessKey.isPresent()) {
-        throw new BadRequestException(
-            "Group send endorsement tokens should not be combined with other authentication");
+        throw new BadRequestException("Group send endorsement tokens should not be combined with other authentication");
       } else if (isStory) {
         throw new BadRequestException("Group send endorsement tokens should not be sent for story messages");
       }
     }
 
-    final String senderType = source.map(
-            s -> s.getAccount().isIdentifiedBy(destinationIdentifier) ? SENDER_TYPE_SELF : SENDER_TYPE_IDENTIFIED)
-        .orElse(SENDER_TYPE_UNIDENTIFIED);
-
     final Sample sample = Timer.start();
+    final boolean needsSync;
+
     try {
-      final boolean isSyncMessage = senderType.equals(SENDER_TYPE_SELF);
+      if (isStory) {
+        needsSync = false;
+        sendStoryMessage(destinationIdentifier, messages, context);
+      } else if (source.isPresent()) {
+        final AuthenticatedDevice authenticatedDevice = source.get();
 
-      if (isSyncMessage && destinationIdentifier.identityType() == IdentityType.PNI) {
-        throw new WebApplicationException(Status.FORBIDDEN);
-      }
-
-      final Optional<Account> maybeDestination;
-      if (!isSyncMessage) {
-        maybeDestination = accountsManager.getByServiceIdentifier(destinationIdentifier);
+        if (authenticatedDevice.getAccount().isIdentifiedBy(destinationIdentifier)) {
+          needsSync = false;
+          sendSyncMessage(source.get(), destinationIdentifier, messages, context);
+        } else {
+          needsSync = authenticatedDevice.getAccount().getDevices().size() > 1;
+          sendIdentifiedSenderIndividualMessage(authenticatedDevice, destinationIdentifier, messages, context);
+        }
       } else {
-        maybeDestination = source.map(AuthenticatedDevice::getAccount);
-      }
-
-      final SpamChecker.SpamCheckResult spamCheck = spamChecker.checkForSpam(
-          context, source, maybeDestination, Optional.of(destinationIdentifier));
-      final Optional<byte[]> reportSpamToken;
-      switch (spamCheck) {
-        case final SpamChecker.Spam spam: return spam.response();
-        case final SpamChecker.NotSpam notSpam: reportSpamToken = notSpam.token();
-      }
-
-      int totalContentLength = 0;
-
-      for (final IncomingMessage message : messages.messages()) {
-        final int contentLength = message.content().length;
-
-        try {
-          MessageSender.validateContentLength(contentLength, false, isSyncMessage, isStory, userAgent);
-        } catch (final MessageTooLargeException e) {
-          throw new WebApplicationException(Status.REQUEST_ENTITY_TOO_LARGE);
-        }
-
-        totalContentLength += contentLength;
-      }
-
-      try {
-        rateLimiters.getInboundMessageBytes().validate(destinationIdentifier.uuid(), totalContentLength);
-      } catch (final RateLimitExceededException e) {
-        messageByteLimitEstimator.add(destinationIdentifier.uuid().toString());
-        throw e;
-      }
-
-      try {
-        if (isStory) {
-          // Stories will be checked by the client; we bypass access checks here for stories.
-        } else if (groupSendToken != null) {
-          checkGroupSendToken(List.of(destinationIdentifier.toLibsignal()), groupSendToken);
-          if (maybeDestination.isEmpty()) {
-            throw new NotFoundException();
-          }
-        } else {
-          OptionalAccess.verify(source.map(AuthenticatedDevice::getAccount), accessKey, maybeDestination,
-              destinationIdentifier);
-        }
-
-        final boolean needsSync = !isSyncMessage && source.isPresent() && source.get().getAccount().getDevices().size() > 1;
-
-        // We return 200 when stories are sent to a non-existent account. Since story sends bypass OptionalAccess.verify
-        // we leak information about whether a destination UUID exists if we return any other code (e.g. 404) from
-        // these requests.
-        if (isStory && maybeDestination.isEmpty()) {
-          return Response.ok(new SendMessageResponse(needsSync)).build();
-        }
-
-        // if destination is empty we would either throw an exception in OptionalAccess.verify when isStory is false
-        // or else return a 200 response when isStory is true.
-        final Account destination = maybeDestination.orElseThrow();
-
-        if (source.isPresent() && !isSyncMessage) {
-          checkMessageRateLimit(source.get(), destination, userAgent);
-        }
-
-        if (isStory) {
-          rateLimiters.getStoriesLimiter().validate(destination.getUuid());
-        }
-
-        final Set<Byte> excludedDeviceIds;
-
-        if (isSyncMessage) {
-          excludedDeviceIds = Set.of(source.get().getAuthenticatedDevice().getId());
-        } else {
-          excludedDeviceIds = Collections.emptySet();
-        }
-
-        final Map<Byte, Envelope> messagesByDeviceId = messages.messages().stream()
-            .collect(Collectors.toMap(IncomingMessage::destinationDeviceId, message -> {
-              try {
-                return message.toEnvelope(
-                    destinationIdentifier,
-                    source.map(AuthenticatedDevice::getAccount).orElse(null),
-                    source.map(account -> account.getAuthenticatedDevice().getId()).orElse(null),
-                    messages.timestamp() == 0 ? System.currentTimeMillis() : messages.timestamp(),
-                    isStory,
-                    messages.online(),
-                    messages.urgent(),
-                    reportSpamToken.orElse(null));
-              } catch (final IllegalArgumentException e) {
-                logger.warn("Received bad envelope type {} from {}", message.type(), userAgent);
-                throw new BadRequestException(e);
-              }
-            }));
-
-        DestinationDeviceValidator.validateCompleteDeviceList(destination,
-            messagesByDeviceId.keySet(),
-            excludedDeviceIds);
-
-        DestinationDeviceValidator.validateRegistrationIds(destination,
-            messages.messages(),
-            IncomingMessage::destinationDeviceId,
-            IncomingMessage::destinationRegistrationId,
-            destination.getPhoneNumberIdentifier().equals(destinationIdentifier.uuid()));
-
-        final String authType;
-        if (SENDER_TYPE_IDENTIFIED.equals(senderType)) {
-          authType = AUTH_TYPE_IDENTIFIED;
-        } else if (isStory) {
-          authType = AUTH_TYPE_STORY;
-        } else if (groupSendToken != null) {
-          authType = AUTH_TYPE_GROUP_SEND_TOKEN;
-        } else {
-          authType = AUTH_TYPE_ACCESS_KEY;
-        }
-
-        messageSender.sendMessages(destination, messagesByDeviceId);
-
-        Metrics.counter(SENT_MESSAGE_COUNTER_NAME, List.of(UserAgentTagUtil.getPlatformTag(userAgent),
-            Tag.of(ENDPOINT_TYPE_TAG_NAME, ENDPOINT_TYPE_SINGLE),
-            Tag.of(EPHEMERAL_TAG_NAME, String.valueOf(messages.online())),
-            Tag.of(SENDER_TYPE_TAG_NAME, senderType),
-            Tag.of(AUTH_TYPE_TAG_NAME, authType),
-            Tag.of(IDENTITY_TYPE_TAG_NAME, destinationIdentifier.identityType().name())))
-            .increment(messagesByDeviceId.size());
-
-        return Response.ok(new SendMessageResponse(needsSync)).build();
-      } catch (final MismatchedDevicesException e) {
-        throw new WebApplicationException(Response.status(409)
-            .type(MediaType.APPLICATION_JSON_TYPE)
-            .entity(new MismatchedDevices(e.getMissingDevices(),
-                e.getExtraDevices()))
-            .build());
-      } catch (final StaleDevicesException e) {
-        throw new WebApplicationException(Response.status(410)
-            .type(MediaType.APPLICATION_JSON)
-            .entity(new StaleDevices(e.getStaleDevices()))
-            .build());
+        needsSync = false;
+        sendSealedSenderMessage(destinationIdentifier, messages, accessKey, groupSendToken != null ? groupSendToken.token() : null, context);
       }
     } finally {
-      sample.stop(Timer.builder(SEND_MESSAGE_LATENCY_TIMER_NAME)
-          .tags(SENDER_TYPE_TAG_NAME, senderType)
-          .publishPercentileHistogram(true)
-          .register(Metrics.globalRegistry));
+      sample.stop(INDIVIDUAL_MESSAGE_LATENCY_TIMER);
+    }
+
+    return Response.ok(new SendMessageResponse(needsSync)).build();
+  }
+
+  private void sendIdentifiedSenderIndividualMessage(final AuthenticatedDevice source,
+      final ServiceIdentifier destinationIdentifier,
+      final IncomingMessageList messages,
+      final ContainerRequestContext context)
+      throws RateLimitExceededException {
+
+    final Account destination =
+        accountsManager.getByServiceIdentifier(destinationIdentifier).orElseThrow(NotFoundException::new);
+
+    rateLimiters.getMessagesLimiter().validate(source.getAccount().getUuid(), destination.getUuid());
+
+    sendIndividualMessage(destination,
+        destinationIdentifier,
+        source,
+        messages,
+        false,
+        MessageType.INDIVIDUAL_IDENTIFIED_SENDER,
+        context);
+  }
+
+  private void sendSyncMessage(final AuthenticatedDevice source,
+      final ServiceIdentifier destinationIdentifier,
+      final IncomingMessageList messages,
+      final ContainerRequestContext context)
+      throws RateLimitExceededException {
+
+    if (destinationIdentifier.identityType() == IdentityType.PNI) {
+      throw new WebApplicationException(Status.FORBIDDEN);
+    }
+
+    sendIndividualMessage(source.getAccount(),
+        destinationIdentifier,
+        source,
+        messages,
+        false,
+        MessageType.SYNC,
+        context);
+  }
+
+  private void sendSealedSenderMessage(final ServiceIdentifier destinationIdentifier,
+      final IncomingMessageList messages,
+      final Optional<Anonymous> accessKey,
+      @Nullable final GroupSendFullToken groupSendToken,
+      final ContainerRequestContext context)
+      throws RateLimitExceededException {
+
+    if (accessKey.isEmpty() && groupSendToken == null) {
+      throw new WebApplicationException(Status.UNAUTHORIZED);
+    }
+
+    final Optional<Account> maybeDestination = accountsManager.getByServiceIdentifier(destinationIdentifier);
+
+    if (groupSendToken != null) {
+      checkGroupSendToken(List.of(destinationIdentifier.toLibsignal()), groupSendToken);
+    } else {
+      OptionalAccess.verify(Optional.empty(), accessKey, maybeDestination, destinationIdentifier);
+    }
+
+    final Account destination = maybeDestination.orElseThrow(NotFoundException::new);
+
+    sendIndividualMessage(destination,
+        destinationIdentifier,
+        null,
+        messages,
+        false,
+        MessageType.INDIVIDUAL_SEALED_SENDER,
+        context);
+  }
+
+  private void sendStoryMessage(final ServiceIdentifier destinationIdentifier,
+      final IncomingMessageList messages,
+      final ContainerRequestContext context)
+      throws RateLimitExceededException {
+
+    // We return 200 when stories are sent to a non-existent account. Since story sends bypass OptionalAccess.verify
+    // authentication is handled by the receiving client, we leak information about whether a destination UUID exists if
+    // we return any other code (e.g. 404) from these requests.
+    final Account destination = accountsManager.getByServiceIdentifier(destinationIdentifier).orElseThrow(() ->
+        new WebApplicationException(Response.ok(new SendMessageResponse(false)).build()));
+
+    rateLimiters.getStoriesLimiter().validate(destination.getUuid());
+
+    sendIndividualMessage(destination,
+        destinationIdentifier,
+        null,
+        messages,
+        true,
+        MessageType.INDIVIDUAL_STORY,
+        context);
+  }
+
+  private void sendIndividualMessage(final Account destination,
+      final ServiceIdentifier destinationIdentifier,
+      @Nullable final AuthenticatedDevice sender,
+      final IncomingMessageList messages,
+      final boolean isStory,
+      final MessageType messageType,
+      final ContainerRequestContext context) throws RateLimitExceededException {
+
+    final SpamCheckResult<Response> spamCheckResult =
+        spamChecker.checkForIndividualRecipientSpamHttp(messageType,
+            context,
+            Optional.ofNullable(sender),
+            Optional.of(destination),
+            destinationIdentifier);
+
+    spamCheckResult.response().ifPresent(response -> {
+      throw new WebApplicationException(response);
+    });
+
+    final String userAgent = context.getHeaderString(HttpHeaders.USER_AGENT);
+
+    try {
+      final int totalContentLength =
+          messages.messages().stream().mapToInt(message -> message.content().length).sum();
+
+      rateLimiters.getInboundMessageBytes().validate(destinationIdentifier.uuid(), totalContentLength);
+    } catch (final RateLimitExceededException e) {
+      messageByteLimitEstimator.add(destinationIdentifier.uuid().toString());
+      throw e;
+    }
+
+    final Map<Byte, Envelope> messagesByDeviceId = messages.messages().stream()
+        .collect(Collectors.toMap(IncomingMessage::destinationDeviceId, message -> {
+          try {
+            return message.toEnvelope(
+                destinationIdentifier,
+                sender != null ? sender.getAccount() : null,
+                sender != null ? sender.getAuthenticatedDevice().getId() : null,
+                messages.timestamp() == 0 ? System.currentTimeMillis() : messages.timestamp(),
+                isStory,
+                messages.online(),
+                messages.urgent(),
+                spamCheckResult.token().orElse(null));
+          } catch (final IllegalArgumentException e) {
+            logger.warn("Received bad envelope type {} from {}", message.type(), userAgent);
+            throw new BadRequestException(e);
+          }
+        }));
+
+    final Map<Byte, Integer> registrationIdsByDeviceId = messages.messages().stream()
+        .collect(Collectors.toMap(IncomingMessage::destinationDeviceId, IncomingMessage::destinationRegistrationId));
+
+    try {
+      messageSender.sendMessages(destination,
+          destinationIdentifier,
+          messagesByDeviceId,
+          registrationIdsByDeviceId,
+          userAgent);
+    } catch (final MismatchedDevicesException e) {
+      if (!e.getMismatchedDevices().staleDeviceIds().isEmpty()) {
+        throw new WebApplicationException(Response.status(410)
+            .type(MediaType.APPLICATION_JSON)
+            .entity(new StaleDevicesResponse(e.getMismatchedDevices().staleDeviceIds()))
+            .build());
+      } else {
+        throw new WebApplicationException(Response.status(409)
+            .type(MediaType.APPLICATION_JSON_TYPE)
+            .entity(new MismatchedDevicesResponse(e.getMismatchedDevices().missingDeviceIds(),
+                e.getMismatchedDevices().extraDeviceIds()))
+            .build());
+      }
+    } catch (final MessageTooLargeException e) {
+      throw new WebApplicationException(Status.REQUEST_ENTITY_TOO_LARGE);
     }
   }
 
@@ -481,8 +497,6 @@ public class MessageController {
       @HeaderParam(HeaderUtils.GROUP_SEND_TOKEN)
       @Nullable GroupSendTokenHeader groupSendToken,
 
-      @HeaderParam(HttpHeaders.USER_AGENT) String userAgent,
-
       @Parameter(description="If true, deliver the message only to recipients that are online when it is sent")
       @QueryParam("online") boolean online,
 
@@ -497,7 +511,7 @@ public class MessageController {
       @Parameter(description="The sealed-sender multi-recipient message payload as serialized by libsignal")
       @NotNull SealedSenderMultiRecipientMessage multiRecipientMessage,
 
-      @Context ContainerRequestContext context) throws RateLimitExceededException {
+      @Context ContainerRequestContext context) {
 
     if (timestamp < 0 || timestamp > MAX_TIMESTAMP) {
       throw new BadRequestException("Illegal timestamp");
@@ -507,222 +521,207 @@ public class MessageController {
       throw new BadRequestException("Recipient list is empty");
     }
 
-    // Verify that the message isn't too large before performing more expensive validations
-    multiRecipientMessage.getRecipients().values().forEach(recipient -> {
-      try {
-        MessageSender.validateContentLength(multiRecipientMessage.messageSizeForRecipient(recipient), true, false, isStory, userAgent);
-      } catch (final MessageTooLargeException e) {
-        throw new WebApplicationException(Status.REQUEST_ENTITY_TOO_LARGE);
-      }
-    });
+    final Timer.Sample sample = Timer.start();
 
-    // Check that the request is well-formed and doesn't contain repeated entries for the same device for the same
-    // recipient
-    {
-      final boolean[] usedDeviceIds = new boolean[Device.MAXIMUM_DEVICE_ID];
+    try {
+      final SendMultiRecipientMessageResponse sendMultiRecipientMessageResponse;
 
-      for (final SealedSenderMultiRecipientMessage.Recipient recipient : multiRecipientMessage.getRecipients().values()) {
-        Arrays.fill(usedDeviceIds, false);
-
-        for (final byte deviceId : recipient.getDevices()) {
-          if (usedDeviceIds[deviceId]) {
-            throw new BadRequestException();
-          }
-
-          usedDeviceIds[deviceId] = true;
+      if (isStory) {
+        if (groupSendToken != null) {
+          // Stories require no authentication. We fail requests that provide a groupSendToken, but for historical
+          // reasons we allow requests to set a combined access key, even though we ignore it
+          throw new BadRequestException("Group send token not allowed when sending stories");
         }
+
+        sendMultiRecipientMessageResponse =
+            sendMultiRecipientStoryMessage(multiRecipientMessage, timestamp, online, isUrgent, context);
+      } else {
+        sendMultiRecipientMessageResponse =
+            sendMultiRecipientMessage(multiRecipientMessage, timestamp, online, isUrgent, groupSendToken, accessKeys,
+                context);
       }
+
+      return Response.ok(sendMultiRecipientMessageResponse).build();
+    } finally {
+      sample.stop(MULTI_RECIPIENT_MESSAGE_LATENCY_TIMER);
+    }
+  }
+
+  private SendMultiRecipientMessageResponse sendMultiRecipientMessage(final SealedSenderMultiRecipientMessage multiRecipientMessage,
+      final long timestamp,
+      final boolean ephemeral,
+      final boolean urgent,
+      @Nullable final GroupSendTokenHeader groupSendTokenHeader,
+      @Nullable final CombinedUnidentifiedSenderAccessKeys combinedUnidentifiedSenderAccessKeys,
+      final ContainerRequestContext context) {
+
+    // Perform fast, inexpensive checks before attempting to resolve recipients
+    if (MessageUtil.hasDuplicateDevices(multiRecipientMessage)) {
+      throw new BadRequestException("Multi-recipient message contains duplicate recipient");
     }
 
-    final SpamChecker.SpamCheckResult spamCheck = spamChecker.checkForSpam(context, Optional.empty(), Optional.empty(), Optional.empty());
-    if (spamCheck instanceof final SpamChecker.Spam spam) {
-      return spam.response();
-    }
-
-    if (groupSendToken == null && accessKeys == null && !isStory) {
+    if (groupSendTokenHeader == null && combinedUnidentifiedSenderAccessKeys == null) {
       throw new NotAuthorizedException("A group send endorsement token or unidentified access key is required for non-story messages");
     }
-    if (groupSendToken != null) {
-      if (accessKeys != null) {
-        throw new BadRequestException("Only one of group send endorsement token and unidentified access key may be provided");
-      } else if (isStory) {
-        throw new BadRequestException("Stories should not provide a group send endorsement token");
-      }
+
+    if (groupSendTokenHeader != null && combinedUnidentifiedSenderAccessKeys != null) {
+      throw new BadRequestException("Only one of group send endorsement token and unidentified access key may be provided");
     }
 
-    if (groupSendToken != null) {
+    if (groupSendTokenHeader != null) {
       // Group send endorsements are checked before we even attempt to resolve any accounts, since
       // the lists of service IDs in the envelope are all that we need to check against
-      checkGroupSendToken(multiRecipientMessage.getRecipients().keySet(), groupSendToken);
+      checkGroupSendToken(multiRecipientMessage.getRecipients().keySet(), groupSendTokenHeader);
     }
 
     // At this point, the caller has at least superficially provided the information needed to send a multi-recipient
     // message. Attempt to resolve the destination service identifiers to Signal accounts.
     final Map<SealedSenderMultiRecipientMessage.Recipient, Account> resolvedRecipients =
-        Flux.fromIterable(multiRecipientMessage.getRecipients().entrySet())
-            .flatMap(serviceIdAndRecipient -> {
-              final ServiceIdentifier serviceIdentifier =
-                  ServiceIdentifier.fromLibsignal(serviceIdAndRecipient.getKey());
+        MessageUtil.resolveRecipients(accountsManager, multiRecipientMessage);
 
-              return Mono.fromFuture(() -> accountsManager.getByServiceIdentifierAsync(serviceIdentifier))
-                  .flatMap(Mono::justOrEmpty)
-                  .switchIfEmpty(isStory || groupSendToken != null ? Mono.empty() : Mono.error(NotFoundException::new))
-                  .map(account -> Tuples.of(serviceIdAndRecipient.getValue(), account));
-            }, MAX_FETCH_ACCOUNT_CONCURRENCY)
-            .collectMap(Tuple2::getT1, Tuple2::getT2)
-            .blockOptional()
-            .orElse(Collections.emptyMap());
+    final List<ServiceIdentifier> unresolvedRecipientServiceIdentifiers =
+        MessageUtil.getUnresolvedRecipients(multiRecipientMessage, resolvedRecipients);
+
+    if (groupSendTokenHeader == null && !unresolvedRecipientServiceIdentifiers.isEmpty()) {
+      throw new NotFoundException();
+    }
 
     // Access keys are checked against the UAK in the resolved accounts, so we have to check after resolving accounts above.
     // Group send endorsements are checked earlier; for stories, we don't check permissions at all because only clients check them
-    if (groupSendToken == null && !isStory) {
-      checkAccessKeys(accessKeys, multiRecipientMessage, resolvedRecipients);
+    if (groupSendTokenHeader == null) {
+      checkAccessKeys(combinedUnidentifiedSenderAccessKeys, multiRecipientMessage, resolvedRecipients);
     }
+
+    sendMultiRecipientMessage(multiRecipientMessage,
+        resolvedRecipients,
+        timestamp,
+        false,
+        ephemeral,
+        urgent,
+        context);
+
+    return new SendMultiRecipientMessageResponse(unresolvedRecipientServiceIdentifiers);
+  }
+
+  @SuppressWarnings("SameReturnValue")
+  private SendMultiRecipientMessageResponse sendMultiRecipientStoryMessage(final SealedSenderMultiRecipientMessage multiRecipientMessage,
+      final long timestamp,
+      final boolean ephemeral,
+      final boolean urgent,
+      final ContainerRequestContext context) {
+
+    // Perform fast, inexpensive checks before attempting to resolve recipients
+    if (MessageUtil.hasDuplicateDevices(multiRecipientMessage)) {
+      throw new BadRequestException("Multi-recipient message contains duplicate recipient");
+    }
+
+    // At this point, the caller has at least superficially provided the information needed to send a multi-recipient
+    // message. Attempt to resolve the destination service identifiers to Signal accounts.
+    final Map<SealedSenderMultiRecipientMessage.Recipient, Account> resolvedRecipients =
+        MessageUtil.resolveRecipients(accountsManager, multiRecipientMessage);
 
     // We might filter out all the recipients of a story (if none exist).
     // In this case there is no error so we should just return 200 now.
-    if (isStory) {
-      if (resolvedRecipients.isEmpty()) {
-        return Response.ok(new SendMultiRecipientMessageResponse(List.of())).build();
-      }
-
-      try {
-        CompletableFuture.allOf(resolvedRecipients.values()
-                .stream()
-                .map(account -> account.getIdentifier(IdentityType.ACI))
-                .map(accountIdentifier ->
-                    rateLimiters.getStoriesLimiter().validateAsync(accountIdentifier).toCompletableFuture())
-                .toList()
-                .toArray(EMPTY_FUTURE_ARRAY))
-            .join();
-      } catch (final Exception e) {
-        if (ExceptionUtils.unwrap(e) instanceof RateLimitExceededException rateLimitExceededException) {
-          throw rateLimitExceededException;
-        } else {
-          throw ExceptionUtils.wrap(e);
-        }
-      }
+    if (resolvedRecipients.isEmpty()) {
+      return SEND_STORY_RESPONSE;
     }
 
-    final Collection<AccountMismatchedDevices> accountMismatchedDevices = new ArrayList<>();
-    final Collection<AccountStaleDevices> accountStaleDevices = new ArrayList<>();
+    CompletableFuture.allOf(resolvedRecipients.values()
+            .stream()
+            .map(account -> account.getIdentifier(IdentityType.ACI))
+            .map(accountIdentifier ->
+                rateLimiters.getStoriesLimiter().validateAsync(accountIdentifier).toCompletableFuture())
+            .toList()
+            .toArray(EMPTY_FUTURE_ARRAY))
+        .join();
 
-    multiRecipientMessage.getRecipients().forEach((serviceId, recipient) -> {
-      if (!resolvedRecipients.containsKey(recipient)) {
-        // When sending stories, we might not be able to resolve all recipients to existing accounts. That's okay! We
-        // can just skip them.
-        return;
-      }
+    sendMultiRecipientMessage(multiRecipientMessage,
+        resolvedRecipients,
+        timestamp,
+        true,
+        ephemeral,
+        urgent,
+        context);
 
-      final Account account = resolvedRecipients.get(recipient);
+    return SEND_STORY_RESPONSE;
+  }
 
-      try {
-        final Map<Byte, Short> deviceIdsToRegistrationIds = recipient.getDevicesAndRegistrationIds()
-                .collect(Collectors.toMap(Pair<Byte, Short>::first, Pair<Byte, Short>::second));
+  private void sendMultiRecipientMessage(final SealedSenderMultiRecipientMessage multiRecipientMessage,
+      final Map<SealedSenderMultiRecipientMessage.Recipient, Account> resolvedRecipients,
+      final long timestamp,
+      final boolean isStory,
+      final boolean ephemeral,
+      final boolean urgent,
+      final ContainerRequestContext context) {
 
-        DestinationDeviceValidator.validateCompleteDeviceList(account, deviceIdsToRegistrationIds.keySet(),
-            Collections.emptySet());
+    final MessageType messageType =
+        isStory ? MessageType.MULTI_RECIPIENT_STORY : MessageType.MULTI_RECIPIENT_SEALED_SENDER;
 
-        DestinationDeviceValidator.validateRegistrationIds(
-            account,
-            deviceIdsToRegistrationIds.entrySet(),
-            Map.Entry<Byte, Short>::getKey,
-            e -> Integer.valueOf(e.getValue()),
-            serviceId instanceof ServiceId.Pni);
-      } catch (final MismatchedDevicesException e) {
-        accountMismatchedDevices.add(
-            new AccountMismatchedDevices(
-                ServiceIdentifier.fromLibsignal(serviceId),
-                new MismatchedDevices(e.getMissingDevices(), e.getExtraDevices())));
-      } catch (final StaleDevicesException e) {
-        accountStaleDevices.add(
-            new AccountStaleDevices(ServiceIdentifier.fromLibsignal(serviceId), new StaleDevices(e.getStaleDevices())));
-      }
+    spamChecker.checkForMultiRecipientSpamHttp(messageType, context).response().ifPresent(response -> {
+      throw new WebApplicationException(response);
     });
-
-    if (!accountMismatchedDevices.isEmpty()) {
-      return Response
-          .status(409)
-          .type(MediaType.APPLICATION_JSON_TYPE)
-          .entity(accountMismatchedDevices)
-          .build();
-    }
-    if (!accountStaleDevices.isEmpty()) {
-      return Response
-          .status(410)
-          .type(MediaType.APPLICATION_JSON)
-          .entity(accountStaleDevices)
-          .build();
-    }
-
-    final String authType;
-    if (isStory) {
-      authType = AUTH_TYPE_STORY;
-    } else if (groupSendToken != null) {
-      authType = AUTH_TYPE_GROUP_SEND_TOKEN;
-    } else {
-      authType = AUTH_TYPE_ACCESS_KEY;
-    }
 
     try {
       if (!resolvedRecipients.isEmpty()) {
-        messageSender.sendMultiRecipientMessage(multiRecipientMessage, resolvedRecipients, timestamp, isStory, online, isUrgent).get();
+        messageSender.sendMultiRecipientMessage(multiRecipientMessage,
+            resolvedRecipients,
+            timestamp, isStory,
+            ephemeral,
+            urgent,
+            context.getHeaderString(HttpHeaders.USER_AGENT)).get();
       }
-
-      final List<ServiceIdentifier> unresolvedRecipientServiceIds;
-      if (AUTH_TYPE_GROUP_SEND_TOKEN.equals(authType)) {
-        unresolvedRecipientServiceIds = multiRecipientMessage.getRecipients().entrySet().stream()
-            .filter(entry -> !resolvedRecipients.containsKey(entry.getValue()))
-            .map(entry -> ServiceIdentifier.fromLibsignal(entry.getKey()))
-            .toList();
-      } else {
-        unresolvedRecipientServiceIds = List.of();
-      }
-
-      multiRecipientMessage.getRecipients().forEach((serviceId, recipient) -> {
-        if (!resolvedRecipients.containsKey(recipient)) {
-          // We skipped sending to this recipient because we couldn't resolve the recipient to an
-          // existing account; don't increment the counter for this recipient. If the client was
-          // using a GSE, track the missing recipients to include in the response.
-          return;
-        }
-
-        final String identityType = switch (serviceId) {
-          case ServiceId.Aci ignored -> "ACI";
-          case ServiceId.Pni ignored -> "PNI";
-          default -> "unknown";
-        };
-
-        Metrics.counter(SENT_MESSAGE_COUNTER_NAME, Tags.of(
-                UserAgentTagUtil.getPlatformTag(userAgent),
-                Tag.of(ENDPOINT_TYPE_TAG_NAME, ENDPOINT_TYPE_MULTI),
-                Tag.of(EPHEMERAL_TAG_NAME, String.valueOf(online)),
-                Tag.of(SENDER_TYPE_TAG_NAME, SENDER_TYPE_UNIDENTIFIED),
-                Tag.of(AUTH_TYPE_TAG_NAME, authType),
-                Tag.of(IDENTITY_TYPE_TAG_NAME, identityType)))
-            .increment(recipient.getDevices().length);
-      });
-
-      return Response.ok(new SendMultiRecipientMessageResponse(unresolvedRecipientServiceIds)).build();
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       logger.error("interrupted while delivering multi-recipient messages", e);
       throw new InternalServerErrorException("interrupted during delivery");
-    } catch (CancellationException e) {
+    } catch (final CancellationException e) {
       logger.error("cancelled while delivering multi-recipient messages", e);
       throw new InternalServerErrorException("delivery cancelled");
-    } catch (ExecutionException e) {
+    } catch (final ExecutionException e) {
       logger.error("partial failure while delivering multi-recipient messages", e.getCause());
       throw new InternalServerErrorException("failure during delivery");
+    } catch (final MessageTooLargeException e) {
+      throw new WebApplicationException(Status.REQUEST_ENTITY_TOO_LARGE);
+    } catch (final MultiRecipientMismatchedDevicesException e) {
+      final List<AccountMismatchedDevices> accountMismatchedDevices =
+          e.getMismatchedDevicesByServiceIdentifier().entrySet().stream()
+              .filter(entry -> !entry.getValue().missingDeviceIds().isEmpty() || !entry.getValue().extraDeviceIds().isEmpty())
+              .map(entry -> new AccountMismatchedDevices(entry.getKey(),
+                  new MismatchedDevicesResponse(entry.getValue().missingDeviceIds(), entry.getValue().extraDeviceIds())))
+              .toList();
+
+      if (!accountMismatchedDevices.isEmpty()) {
+        throw new WebApplicationException(Response
+            .status(409)
+            .type(MediaType.APPLICATION_JSON_TYPE)
+            .entity(accountMismatchedDevices)
+            .build());
+      }
+
+      final List<AccountStaleDevices> accountStaleDevices =
+          e.getMismatchedDevicesByServiceIdentifier().entrySet().stream()
+              .filter(entry -> !entry.getValue().staleDeviceIds().isEmpty())
+              .map(entry -> new AccountStaleDevices(entry.getKey(),
+                  new StaleDevicesResponse(entry.getValue().staleDeviceIds())))
+              .toList();
+
+      throw new WebApplicationException(Response
+          .status(410)
+          .type(MediaType.APPLICATION_JSON)
+          .entity(accountStaleDevices)
+          .build());
     }
   }
 
-  private void checkGroupSendToken(
-      final Collection<ServiceId> recipients,
-      final @NotNull GroupSendTokenHeader groupSendToken) {
+  private void checkGroupSendToken(final Collection<ServiceId> recipients, final GroupSendTokenHeader groupSendToken) {
+    checkGroupSendToken(recipients, groupSendToken.token());
+  }
+
+  private void checkGroupSendToken(final Collection<ServiceId> recipients, final GroupSendFullToken groupSendFullToken) {
     try {
-      final GroupSendFullToken token = groupSendToken.token();
-      token.verify(recipients, clock.instant(), GroupSendDerivedKeyPair.forExpiration(token.getExpiration(), serverSecretParams));
-    } catch (VerificationFailedException e) {
+      groupSendFullToken.verify(recipients,
+          clock.instant(),
+          GroupSendDerivedKeyPair.forExpiration(groupSendFullToken.getExpiration(), serverSecretParams));
+    } catch (final VerificationFailedException e) {
       throw new NotAuthorizedException(e);
     }
   }
@@ -902,22 +901,5 @@ public class MessageController {
 
     return Response.status(Status.ACCEPTED)
         .build();
-  }
-
-  private void checkMessageRateLimit(AuthenticatedDevice source, Account destination, String userAgent)
-      throws RateLimitExceededException {
-    final String senderCountryCode = Util.getCountryCode(source.getAccount().getNumber());
-
-    try {
-      rateLimiters.getMessagesLimiter().validate(source.getAccount().getUuid(), destination.getUuid());
-    } catch (final RateLimitExceededException e) {
-      Metrics.counter(RATE_LIMITED_MESSAGE_COUNTER_NAME,
-          Tags.of(
-              UserAgentTagUtil.getPlatformTag(userAgent),
-              Tag.of(SENDER_COUNTRY_TAG_NAME, senderCountryCode),
-              Tag.of(RATE_LIMIT_REASON_TAG_NAME, "singleDestinationRate"))).increment();
-
-      throw e;
-    }
   }
 }

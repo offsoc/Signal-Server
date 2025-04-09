@@ -7,8 +7,9 @@ package org.whispersystems.textsecuregcm.grpc;
 
 import com.google.protobuf.ByteString;
 import io.grpc.Status;
-
+import io.grpc.StatusException;
 import java.time.Clock;
+import java.util.Collection;
 import java.util.List;
 import org.signal.libsignal.protocol.ServiceId;
 import org.signal.libsignal.zkgroup.InvalidInputException;
@@ -17,8 +18,6 @@ import org.signal.libsignal.zkgroup.VerificationFailedException;
 import org.signal.libsignal.zkgroup.groupsend.GroupSendDerivedKeyPair;
 import org.signal.libsignal.zkgroup.groupsend.GroupSendFullToken;
 import org.whispersystems.textsecuregcm.identity.ServiceIdentifier;
-
-import reactor.core.publisher.Mono;
 
 public class GroupSendTokenUtil {
 
@@ -30,16 +29,22 @@ public class GroupSendTokenUtil {
     this.clock = clock;
   }
 
-  public Mono<Void> checkGroupSendToken(final ByteString serializedGroupSendToken, List<ServiceIdentifier> serviceIdentifiers) {
+  public void checkGroupSendToken(final ByteString serializedGroupSendToken,
+      final ServiceIdentifier serviceIdentifier) throws StatusException {
+
+    checkGroupSendToken(serializedGroupSendToken, List.of(serviceIdentifier.toLibsignal()));
+  }
+
+  public void checkGroupSendToken(final ByteString serializedGroupSendToken,
+      final Collection<ServiceId> serviceIds) throws StatusException {
+
     try {
       final GroupSendFullToken token = new GroupSendFullToken(serializedGroupSendToken.toByteArray());
-      final List<ServiceId> serviceIds = serviceIdentifiers.stream().map(ServiceIdentifier::toLibsignal).toList();
       token.verify(serviceIds, clock.instant(), GroupSendDerivedKeyPair.forExpiration(token.getExpiration(), serverSecretParams));
-      return Mono.empty();
-    } catch (InvalidInputException e) {
-      return Mono.error(Status.INVALID_ARGUMENT.asException());
+    } catch (final InvalidInputException e) {
+      throw Status.INVALID_ARGUMENT.asException();
     } catch (VerificationFailedException e) {
-      return Mono.error(Status.UNAUTHENTICATED.asException());
+      throw Status.UNAUTHENTICATED.asException();
     }
   }
 }

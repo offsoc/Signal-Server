@@ -20,6 +20,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.anyBoolean;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
@@ -39,6 +40,7 @@ import jakarta.ws.rs.client.Invocation;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -55,6 +57,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
+import javax.annotation.Nullable;
 import org.glassfish.jersey.server.ServerProperties;
 import org.glassfish.jersey.test.grizzly.GrizzlyWebTestContainerFactory;
 import org.hamcrest.Matcher;
@@ -72,16 +75,15 @@ import org.mockito.ArgumentCaptor;
 import org.signal.libsignal.zkgroup.ServerSecretParams;
 import org.whispersystems.textsecuregcm.auth.AuthenticatedDevice;
 import org.whispersystems.textsecuregcm.auth.UnidentifiedAccessUtil;
-import org.whispersystems.textsecuregcm.entities.IncomingMessage;
 import org.whispersystems.textsecuregcm.entities.IncomingMessageList;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
 import org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
-import org.whispersystems.textsecuregcm.entities.MismatchedDevices;
+import org.whispersystems.textsecuregcm.entities.MismatchedDevicesResponse;
 import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntity;
 import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntityList;
 import org.whispersystems.textsecuregcm.entities.SendMultiRecipientMessageResponse;
 import org.whispersystems.textsecuregcm.entities.SpamReport;
-import org.whispersystems.textsecuregcm.entities.StaleDevices;
+import org.whispersystems.textsecuregcm.entities.StaleDevicesResponse;
 import org.whispersystems.textsecuregcm.identity.AciServiceIdentifier;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.identity.PniServiceIdentifier;
@@ -90,10 +92,12 @@ import org.whispersystems.textsecuregcm.limits.CardinalityEstimator;
 import org.whispersystems.textsecuregcm.limits.MessageDeliveryLoopMonitor;
 import org.whispersystems.textsecuregcm.limits.RateLimiter;
 import org.whispersystems.textsecuregcm.limits.RateLimiters;
+import org.whispersystems.textsecuregcm.mappers.CompletionExceptionMapper;
 import org.whispersystems.textsecuregcm.mappers.RateLimitExceededExceptionMapper;
 import org.whispersystems.textsecuregcm.metrics.MessageMetrics;
 import org.whispersystems.textsecuregcm.providers.MultiRecipientMessageProvider;
 import org.whispersystems.textsecuregcm.push.MessageSender;
+import org.whispersystems.textsecuregcm.push.MessageTooLargeException;
 import org.whispersystems.textsecuregcm.push.PushNotificationManager;
 import org.whispersystems.textsecuregcm.push.PushNotificationScheduler;
 import org.whispersystems.textsecuregcm.push.ReceiptSender;
@@ -184,6 +188,7 @@ class MessageControllerTest {
       .addProvider(AuthHelper.getAuthFilter())
       .addProvider(new AuthValueFactoryProvider.Binder<>(AuthenticatedDevice.class))
       .addProvider(RateLimitExceededExceptionMapper.class)
+      .addProvider(CompletionExceptionMapper.class)
       .addProvider(MultiRecipientMessageProvider.class)
       .setTestContainerFactory(new GrizzlyWebTestContainerFactory())
       .addResource(
@@ -195,10 +200,10 @@ class MessageControllerTest {
       .build();
 
   @BeforeEach
-  void setup() {
+  void setup() throws MultiRecipientMismatchedDevicesException, MessageTooLargeException {
     reset(pushNotificationScheduler);
 
-    when(messageSender.sendMultiRecipientMessage(any(), any(), anyLong(), anyBoolean(), anyBoolean(), anyBoolean()))
+    when(messageSender.sendMultiRecipientMessage(any(), any(), anyLong(), anyBoolean(), anyBoolean(), anyBoolean(), any()))
         .thenReturn(CompletableFuture.completedFuture(null));
 
     final List<Device> singleDeviceList = List.of(
@@ -287,7 +292,7 @@ class MessageControllerTest {
       assertThat("Good Response", response.getStatus(), is(equalTo(200)));
 
       @SuppressWarnings("unchecked") final ArgumentCaptor<Map<Byte, Envelope>> captor = ArgumentCaptor.forClass(Map.class);
-      verify(messageSender).sendMessages(any(), captor.capture());
+      verify(messageSender).sendMessages(any(), any(), captor.capture(), any(), any());
 
       assertEquals(1, captor.getValue().size());
       final Envelope message = captor.getValue().values().stream().findFirst().orElseThrow();
@@ -332,7 +337,7 @@ class MessageControllerTest {
       assertThat("Good Response", response.getStatus(), is(equalTo(200)));
 
       @SuppressWarnings("unchecked") final ArgumentCaptor<Map<Byte, Envelope>> captor = ArgumentCaptor.forClass(Map.class);
-      verify(messageSender).sendMessages(any(), captor.capture());
+      verify(messageSender).sendMessages(any(), any(), captor.capture(), any(), any());
 
       assertEquals(1, captor.getValue().size());
       final Envelope message = captor.getValue().values().stream().findFirst().orElseThrow();
@@ -357,7 +362,7 @@ class MessageControllerTest {
       assertThat("Good Response", response.getStatus(), is(equalTo(200)));
 
       @SuppressWarnings("unchecked") final ArgumentCaptor<Map<Byte, Envelope>> captor = ArgumentCaptor.forClass(Map.class);
-      verify(messageSender).sendMessages(any(), captor.capture());
+      verify(messageSender).sendMessages(any(), any(), captor.capture(), any(), any());
 
       assertEquals(1, captor.getValue().size());
       final Envelope message = captor.getValue().values().stream().findFirst().orElseThrow();
@@ -395,7 +400,7 @@ class MessageControllerTest {
       assertThat("Good Response", response.getStatus(), is(equalTo(200)));
 
       @SuppressWarnings("unchecked") final ArgumentCaptor<Map<Byte, Envelope>> captor = ArgumentCaptor.forClass(Map.class);
-      verify(messageSender).sendMessages(any(), captor.capture());
+      verify(messageSender).sendMessages(any(), any(), captor.capture(), any(), any());
 
       assertEquals(1, captor.getValue().size());
       final Envelope message = captor.getValue().values().stream().findFirst().orElseThrow();
@@ -434,7 +439,7 @@ class MessageControllerTest {
       assertThat("Good Response", response.getStatus(), is(equalTo(expectedResponse)));
       if (expectedResponse == 200) {
         @SuppressWarnings("unchecked") final ArgumentCaptor<Map<Byte, Envelope>> captor = ArgumentCaptor.forClass(Map.class);
-        verify(messageSender).sendMessages(any(), captor.capture());
+        verify(messageSender).sendMessages(any(), any(), captor.capture(), any(), any());
 
         assertEquals(1, captor.getValue().size());
         final Envelope message = captor.getValue().values().stream().findFirst().orElseThrow();
@@ -530,6 +535,9 @@ class MessageControllerTest {
 
   @Test
   void testMultiDeviceMissing() throws Exception {
+    doThrow(new MismatchedDevicesException(new MismatchedDevices(Set.of((byte) 2, (byte) 3), Collections.emptySet(), Collections.emptySet())))
+        .when(messageSender).sendMessages(any(), any(), any(), any(), any());
+
     try (final Response response =
         resources.getJerseyTest()
             .target(String.format("/v1/messages/%s", MULTI_DEVICE_UUID))
@@ -542,15 +550,16 @@ class MessageControllerTest {
       assertThat("Good Response Code", response.getStatus(), is(equalTo(409)));
 
       assertThat("Good Response Body",
-          asJson(response.readEntity(MismatchedDevices.class)),
+          asJson(response.readEntity(MismatchedDevicesResponse.class)),
           is(equalTo(jsonFixture("fixtures/missing_device_response.json"))));
-
-      verifyNoMoreInteractions(messageSender);
     }
   }
 
   @Test
   void testMultiDeviceExtra() throws Exception {
+    doThrow(new MismatchedDevicesException(new MismatchedDevices(Set.of((byte) 2), Set.of((byte) 4), Collections.emptySet())))
+        .when(messageSender).sendMessages(any(), any(), any(), any(), any());
+
     try (final Response response =
         resources.getJerseyTest()
             .target(String.format("/v1/messages/%s", MULTI_DEVICE_UUID))
@@ -563,10 +572,8 @@ class MessageControllerTest {
       assertThat("Good Response Code", response.getStatus(), is(equalTo(409)));
 
       assertThat("Good Response Body",
-          asJson(response.readEntity(MismatchedDevices.class)),
+          asJson(response.readEntity(MismatchedDevicesResponse.class)),
           is(equalTo(jsonFixture("fixtures/missing_device_response2.json"))));
-
-      verifyNoMoreInteractions(messageSender);
     }
   }
 
@@ -602,7 +609,7 @@ class MessageControllerTest {
       @SuppressWarnings("unchecked") final ArgumentCaptor<Map<Byte, Envelope>> envelopeCaptor =
           ArgumentCaptor.forClass(Map.class);
 
-      verify(messageSender).sendMessages(any(Account.class), envelopeCaptor.capture());
+      verify(messageSender).sendMessages(any(Account.class), any(), envelopeCaptor.capture(), any(), any());
 
       assertEquals(3, envelopeCaptor.getValue().size());
 
@@ -626,7 +633,7 @@ class MessageControllerTest {
       @SuppressWarnings("unchecked") final ArgumentCaptor<Map<Byte, Envelope>> envelopeCaptor =
           ArgumentCaptor.forClass(Map.class);
 
-      verify(messageSender).sendMessages(any(Account.class), envelopeCaptor.capture());
+      verify(messageSender).sendMessages(any(Account.class), any(), envelopeCaptor.capture(), any(), any());
 
       assertEquals(3, envelopeCaptor.getValue().size());
 
@@ -648,12 +655,18 @@ class MessageControllerTest {
       assertThat("Good Response Code", response.getStatus(), is(equalTo(200)));
 
       verify(messageSender).sendMessages(any(Account.class),
-          argThat(messagesByDeviceId -> messagesByDeviceId.size() == 3));
+          any(),
+          argThat(messagesByDeviceId -> messagesByDeviceId.size() == 3),
+          any(),
+          any());
     }
   }
 
   @Test
   void testRegistrationIdMismatch() throws Exception {
+    doThrow(new MismatchedDevicesException(new MismatchedDevices(Collections.emptySet(), Collections.emptySet(), Set.of((byte) 2))))
+        .when(messageSender).sendMessages(any(), any(), any(), any(), any());
+
     try (final Response response =
         resources.getJerseyTest().target(String.format("/v1/messages/%s", MULTI_DEVICE_UUID))
             .request()
@@ -665,10 +678,8 @@ class MessageControllerTest {
       assertThat("Good Response Code", response.getStatus(), is(equalTo(410)));
 
       assertThat("Good Response Body",
-          asJson(response.readEntity(StaleDevices.class)),
+          asJson(response.readEntity(StaleDevicesResponse.class)),
           is(equalTo(jsonFixture("fixtures/mismatched_registration_id.json"))));
-
-      verifyNoMoreInteractions(messageSender);
     }
   }
 
@@ -1078,24 +1089,19 @@ class MessageControllerTest {
   }
 
   @Test
-  void testValidateContentLength() {
-    final int contentLength = Math.toIntExact(MessageSender.MAX_MESSAGE_SIZE + 1);
-    final byte[] contentBytes = new byte[contentLength];
-    Arrays.fill(contentBytes, (byte) 1);
+  void testValidateContentLength() throws MismatchedDevicesException, MessageTooLargeException, IOException {
+    doThrow(new MessageTooLargeException()).when(messageSender).sendMessages(any(), any(), any(), any(), any());
 
     try (final Response response =
         resources.getJerseyTest()
             .target(String.format("/v1/messages/%s", SINGLE_DEVICE_UUID))
             .request()
-            .header(HeaderUtils.UNIDENTIFIED_ACCESS_KEY, Base64.getEncoder().encodeToString(UNIDENTIFIED_ACCESS_BYTES))
-            .put(Entity.entity(new IncomingMessageList(
-                    List.of(new IncomingMessage(1, (byte) 1, 1, contentBytes)), false, true,
-                    System.currentTimeMillis()),
+            .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
+            .put(Entity.entity(SystemMapper.jsonMapper().readValue(jsonFixture("fixtures/current_message_single_device.json"),
+                    IncomingMessageList.class),
                 MediaType.APPLICATION_JSON_TYPE))) {
 
-      assertThat("Bad response", response.getStatus(), is(equalTo(413)));
-
-      verify(messageSender, never()).sendMessages(any(), any());
+      assertThat(response.getStatus(), is(equalTo(413)));
     }
   }
 
@@ -1113,10 +1119,10 @@ class MessageControllerTest {
 
       if (expectOk) {
         assertEquals(200, response.getStatus());
-        verify(messageSender).sendMessages(any(), any());
+        verify(messageSender).sendMessages(any(), any(), any(), any(), any());
       } else {
         assertEquals(422, response.getStatus());
-        verify(messageSender, never()).sendMessages(any(), any());
+        verify(messageSender, never()).sendMessages(any(), any(), any(), any(), any());
       }
     }
   }
@@ -1140,7 +1146,9 @@ class MessageControllerTest {
       final Optional<String> maybeGroupSendToken,
       final int expectedStatus,
       final Set<Account> expectedResolvedAccounts,
-      final Set<ServiceIdentifier> expectedUuids404) {
+      final Set<ServiceIdentifier> expectedUuids404,
+      @Nullable final MultiRecipientMismatchedDevicesException mismatchedDevicesException)
+      throws MultiRecipientMismatchedDevicesException, MessageTooLargeException {
 
     clock.pin(START_OF_DAY);
 
@@ -1150,6 +1158,11 @@ class MessageControllerTest {
     accountsByServiceIdentifier.forEach(((serviceIdentifier, account) ->
         when(accountsManager.getByServiceIdentifierAsync(serviceIdentifier))
             .thenReturn(CompletableFuture.completedFuture(Optional.of(account)))));
+
+    if (mismatchedDevicesException != null) {
+      doThrow(mismatchedDevicesException)
+          .when(messageSender).sendMultiRecipientMessage(any(), any(), anyLong(), anyBoolean(), anyBoolean(), anyBoolean(), any());
+    }
 
     final boolean ephemeral = true;
     final boolean urgent = false;
@@ -1187,16 +1200,18 @@ class MessageControllerTest {
         assertThat(Set.copyOf(entity.uuids404()), equalTo(expectedUuids404));
       }
 
-      if (expectedStatus == 200 && !expectedResolvedAccounts.isEmpty()) {
+      if ((expectedStatus == 200 && !expectedResolvedAccounts.isEmpty()) || mismatchedDevicesException != null) {
         verify(messageSender).sendMultiRecipientMessage(any(),
             argThat(resolvedRecipients ->
                 new HashSet<>(resolvedRecipients.values()).equals(expectedResolvedAccounts)),
             anyLong(),
             eq(isStory),
             eq(ephemeral),
-            eq(urgent));
+            eq(urgent),
+            any());
       } else {
-        verify(messageSender, never()).sendMultiRecipientMessage(any(), any(), anyLong(), anyBoolean(), anyBoolean(), anyBoolean());
+        verify(messageSender, never())
+            .sendMultiRecipientMessage(any(), any(), anyLong(), anyBoolean(), anyBoolean(), anyBoolean(), any());
       }
     }
   }
@@ -1267,7 +1282,8 @@ class MessageControllerTest {
             Optional.empty(),
             200,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Multi-recipient message with combined UAKs",
             accountsByServiceIdentifier,
@@ -1279,7 +1295,8 @@ class MessageControllerTest {
             Optional.empty(),
             200,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Multi-recipient message with group send endorsement",
             accountsByServiceIdentifier,
@@ -1291,7 +1308,8 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             200,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Incorrect combined UAK",
             accountsByServiceIdentifier,
@@ -1303,7 +1321,8 @@ class MessageControllerTest {
             Optional.empty(),
             401,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Incorrect group send endorsement",
             accountsByServiceIdentifier,
@@ -1317,7 +1336,8 @@ class MessageControllerTest {
                 START_OF_DAY.plus(Duration.ofDays(1)))),
             401,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         // Stories don't require credentials of any kind, but for historical reasons, we don't reject a combined UAK if
         // provided
@@ -1331,7 +1351,8 @@ class MessageControllerTest {
             Optional.empty(),
             200,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Story with group send endorsement",
             accountsByServiceIdentifier,
@@ -1343,7 +1364,8 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             400,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Conflicting credentials",
             accountsByServiceIdentifier,
@@ -1355,7 +1377,8 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             400,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("No credentials",
             accountsByServiceIdentifier,
@@ -1367,23 +1390,8 @@ class MessageControllerTest {
             Optional.empty(),
             401,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
-
-        Arguments.argumentSet("Oversized payload",
-            accountsByServiceIdentifier,
-            MultiRecipientMessageHelper.generateMultiRecipientMessage(List.of(
-                new TestRecipient(new AciServiceIdentifier(singleDeviceAccountAci), Device.PRIMARY_ID, singleDevicePrimaryRegistrationId, new byte[48]),
-                new TestRecipient(new AciServiceIdentifier(multiDeviceAccountAci), Device.PRIMARY_ID, multiDevicePrimaryRegistrationId, new byte[48]),
-                new TestRecipient(new AciServiceIdentifier(multiDeviceAccountAci), (byte) (Device.PRIMARY_ID + 1), multiDeviceLinkedRegistrationId, new byte[48])),
-                MultiRecipientMessageProvider.MAX_MESSAGE_SIZE),
-            clock.instant().toEpochMilli(),
-            false,
-            false,
-            Optional.empty(),
-            Optional.of(groupSendEndorsement),
-            413,
-            Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Negative timestamp",
             accountsByServiceIdentifier,
@@ -1395,7 +1403,8 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             400,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Excessive timestamp",
             accountsByServiceIdentifier,
@@ -1407,7 +1416,8 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             400,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Empty recipient list",
             accountsByServiceIdentifier,
@@ -1421,7 +1431,8 @@ class MessageControllerTest {
                 START_OF_DAY.plus(Duration.ofDays(1)))),
             400,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Story with empty recipient list",
             accountsByServiceIdentifier,
@@ -1433,7 +1444,8 @@ class MessageControllerTest {
             Optional.empty(),
             400,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Duplicate recipient",
             accountsByServiceIdentifier,
@@ -1447,7 +1459,8 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             400,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Missing account",
             Map.of(),
@@ -1459,7 +1472,8 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             200,
             Collections.emptySet(),
-            Set.of(new AciServiceIdentifier(singleDeviceAccountAci), new AciServiceIdentifier(multiDeviceAccountAci))),
+            Set.of(new AciServiceIdentifier(singleDeviceAccountAci), new AciServiceIdentifier(multiDeviceAccountAci)),
+            null),
 
         Arguments.argumentSet("One missing and one existing account",
             Map.of(new AciServiceIdentifier(singleDeviceAccountAci), singleDeviceAccount),
@@ -1471,7 +1485,8 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             200,
             Set.of(singleDeviceAccount),
-            Set.of(new AciServiceIdentifier(multiDeviceAccountAci))),
+            Set.of(new AciServiceIdentifier(multiDeviceAccountAci)),
+            null),
 
         Arguments.argumentSet("Missing account for story",
             Map.of(),
@@ -1483,7 +1498,8 @@ class MessageControllerTest {
             Optional.empty(),
             200,
             Collections.emptySet(),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("One missing and one existing account for story",
             Map.of(new AciServiceIdentifier(singleDeviceAccountAci), singleDeviceAccount),
@@ -1495,7 +1511,8 @@ class MessageControllerTest {
             Optional.empty(),
             200,
             Set.of(singleDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Missing device",
             accountsByServiceIdentifier,
@@ -1509,7 +1526,9 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             409,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            new MultiRecipientMismatchedDevicesException(Map.of(new AciServiceIdentifier(multiDeviceAccountAci),
+                new MismatchedDevices(Set.of((byte) (Device.PRIMARY_ID + 1)), Collections.emptySet(), Collections.emptySet())))),
 
         Arguments.argumentSet("Extra device",
             accountsByServiceIdentifier,
@@ -1525,7 +1544,9 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             409,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            new MultiRecipientMismatchedDevicesException(Map.of(new AciServiceIdentifier(multiDeviceAccountAci),
+                new MismatchedDevices(Collections.emptySet(), Set.of((byte) (Device.PRIMARY_ID + 2)), Collections.emptySet())))),
 
         Arguments.argumentSet("Stale registration ID",
             accountsByServiceIdentifier,
@@ -1540,7 +1561,9 @@ class MessageControllerTest {
             Optional.of(groupSendEndorsement),
             410,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            new MultiRecipientMismatchedDevicesException(Map.of(new AciServiceIdentifier(multiDeviceAccountAci),
+                new MismatchedDevices(Collections.emptySet(), Collections.emptySet(), Set.of((byte) (Device.PRIMARY_ID + 1)))))),
 
         Arguments.argumentSet("Rate-limited story",
             accountsByServiceIdentifier,
@@ -1552,7 +1575,8 @@ class MessageControllerTest {
             Optional.empty(),
             429,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Story to PNI recipients",
             accountsByServiceIdentifier,
@@ -1567,7 +1591,8 @@ class MessageControllerTest {
             Optional.empty(),
             200,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Multi-recipient message to PNI recipients with UAK",
             accountsByServiceIdentifier,
@@ -1582,7 +1607,8 @@ class MessageControllerTest {
             Optional.empty(),
             401,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of()),
+            Set.of(),
+            null),
 
         Arguments.argumentSet("Multi-recipient message to PNI recipients with group send endorsement",
             accountsByServiceIdentifier,
@@ -1599,8 +1625,100 @@ class MessageControllerTest {
                 START_OF_DAY.plus(Duration.ofDays(1)))),
             200,
             Set.of(singleDeviceAccount, multiDeviceAccount),
-            Set.of())
+            Set.of(),
+            null)
     );
+  }
+
+  @Test
+  void sendMultiRecipientMessageOversized() throws Exception {
+
+    clock.pin(START_OF_DAY);
+
+    final UUID singleDeviceAccountAci = UUID.randomUUID();
+    final UUID singleDeviceAccountPni = UUID.randomUUID();
+    final UUID multiDeviceAccountAci = UUID.randomUUID();
+    final UUID multiDeviceAccountPni = UUID.randomUUID();
+
+    final byte[] singleDeviceAccountUak = TestRandomUtil.nextBytes(UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH);
+    final byte[] multiDeviceAccountUak = TestRandomUtil.nextBytes(UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH);
+
+    final int singleDevicePrimaryRegistrationId = 1;
+    final int multiDevicePrimaryRegistrationId = 2;
+    final int multiDeviceLinkedRegistrationId = 3;
+
+    final Device singleDeviceAccountPrimary = mock(Device.class);
+    when(singleDeviceAccountPrimary.getId()).thenReturn(Device.PRIMARY_ID);
+    when(singleDeviceAccountPrimary.getRegistrationId()).thenReturn(singleDevicePrimaryRegistrationId);
+
+    final Device multiDeviceAccountPrimary = mock(Device.class);
+    when(multiDeviceAccountPrimary.getId()).thenReturn(Device.PRIMARY_ID);
+    when(multiDeviceAccountPrimary.getRegistrationId()).thenReturn(multiDevicePrimaryRegistrationId);
+
+    final Device multiDeviceAccountLinked = mock(Device.class);
+    when(multiDeviceAccountLinked.getId()).thenReturn((byte) (Device.PRIMARY_ID + 1));
+    when(multiDeviceAccountLinked.getRegistrationId()).thenReturn(multiDeviceLinkedRegistrationId);
+
+    final Account singleDeviceAccount = mock(Account.class);
+    when(singleDeviceAccount.getIdentifier(IdentityType.ACI)).thenReturn(singleDeviceAccountAci);
+    when(singleDeviceAccount.getUnidentifiedAccessKey()).thenReturn(Optional.of(singleDeviceAccountUak));
+    when(singleDeviceAccount.getDevices()).thenReturn(List.of(singleDeviceAccountPrimary));
+    when(singleDeviceAccount.getDevice(anyByte())).thenReturn(Optional.empty());
+    when(singleDeviceAccount.getDevice(Device.PRIMARY_ID)).thenReturn(Optional.of(singleDeviceAccountPrimary));
+
+    final Account multiDeviceAccount = mock(Account.class);
+    when(multiDeviceAccount.getIdentifier(IdentityType.ACI)).thenReturn(multiDeviceAccountAci);
+    when(multiDeviceAccount.getUnidentifiedAccessKey()).thenReturn(Optional.of(multiDeviceAccountUak));
+    when(multiDeviceAccount.getDevices()).thenReturn(List.of(multiDeviceAccountPrimary, multiDeviceAccountLinked));
+    when(multiDeviceAccount.getDevice(anyByte())).thenReturn(Optional.empty());
+    when(multiDeviceAccount.getDevice(Device.PRIMARY_ID)).thenReturn(Optional.of(multiDeviceAccountPrimary));
+    when(multiDeviceAccount.getDevice((byte) (Device.PRIMARY_ID + 1))).thenReturn(Optional.of(multiDeviceAccountLinked));
+
+    final Map<ServiceIdentifier, Account> accountsByServiceIdentifier = Map.of(
+        new AciServiceIdentifier(singleDeviceAccountAci), singleDeviceAccount,
+        new AciServiceIdentifier(multiDeviceAccountAci), multiDeviceAccount,
+        new PniServiceIdentifier(singleDeviceAccountPni), singleDeviceAccount,
+        new PniServiceIdentifier(multiDeviceAccountPni), multiDeviceAccount);
+
+    final byte[] aciMessage = MultiRecipientMessageHelper.generateMultiRecipientMessage(List.of(
+        new TestRecipient(new AciServiceIdentifier(singleDeviceAccountAci), Device.PRIMARY_ID, singleDevicePrimaryRegistrationId, new byte[48]),
+        new TestRecipient(new AciServiceIdentifier(multiDeviceAccountAci), Device.PRIMARY_ID, multiDevicePrimaryRegistrationId, new byte[48]),
+        new TestRecipient(new AciServiceIdentifier(multiDeviceAccountAci), (byte) (Device.PRIMARY_ID + 1), multiDeviceLinkedRegistrationId, new byte[48])));
+
+    when(accountsManager.getByServiceIdentifierAsync(any()))
+        .thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+
+    accountsByServiceIdentifier.forEach(((serviceIdentifier, account) ->
+        when(accountsManager.getByServiceIdentifierAsync(serviceIdentifier))
+            .thenReturn(CompletableFuture.completedFuture(Optional.of(account)))));
+
+    final boolean ephemeral = true;
+    final boolean urgent = false;
+    final boolean story = false;
+
+    final Invocation.Builder invocationBuilder = resources
+        .getJerseyTest()
+        .target("/v1/messages/multi_recipient")
+        .queryParam("ts", clock.millis())
+        .queryParam("online", ephemeral)
+        .queryParam("story", story)
+        .queryParam("urgent", urgent)
+        .request()
+        .header(HeaderUtils.GROUP_SEND_TOKEN, AuthHelper.validGroupSendTokenHeader(serverSecretParams,
+            List.of(new AciServiceIdentifier(singleDeviceAccountAci), new AciServiceIdentifier(multiDeviceAccountAci)),
+            START_OF_DAY.plus(Duration.ofDays(1))));
+
+    when(rateLimiter.validateAsync(any(UUID.class)))
+        .thenReturn(CompletableFuture.completedFuture(null));
+
+    doThrow(new MessageTooLargeException())
+        .when(messageSender).sendMultiRecipientMessage(any(), any(), anyLong(), anyBoolean(), anyBoolean(), anyBoolean(), any());
+
+    try (final Response response = invocationBuilder
+        .put(Entity.entity(aciMessage, MultiRecipientMessageProvider.MEDIA_TYPE))) {
+
+      assertThat(response.getStatus(), is(equalTo(413)));
+    }
   }
 
   @SuppressWarnings("SameParameterValue")
