@@ -24,10 +24,12 @@ service Messages {
    * destination account.
    *
    * This RPC may fail with a `NOT_FOUND` status if the destination account was
-   * not found. It may also fail with a `RESOURCE_EXHAUSTED` status if a rate
-   * limit for sending messages has been exceeded, in which case a `retry-after`
-   * header containing an ISO 8601 duration string may be present in the
-   * response trailers.
+   * not found. It may also fail with an `INVALID_ARGUMENT` status if the
+   * destination account is the same as the authenticated caller (callers should
+   * use `SendSyncMessage` to send messages to themselves). It may also fail
+   * with a `RESOURCE_EXHAUSTED` status if a rate limit for sending messages has
+   * been exceeded, in which case a `retry-after` header containing an ISO 8601
+   * duration string may be present in the response trailers.
    *
    * Note that message delivery may not succeed even if this RPC returns an `OK`
    * status; callers must check the response object to verify that the message
@@ -142,9 +144,12 @@ message IndividualRecipientMessageBundle {
 
   /**
    * The time, in milliseconds since the epoch, at which this message was
-   * originally sent from the perspective of the sender.
+   * originally sent from the perspective of the sender. Note that the maximum
+   * allowable timestamp for JavaScript clients is less than Long.MAX_VALUE; see
+   * https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date#the_epoch_timestamps_and_invalid_date
+   * for additional details and discussion.
    */
-  uint64 timestamp = 1;
+  uint64 timestamp = 1 [(require.range).min = 1, (require.range).max = 8640000000000000];
 
   /**
    * A map of device IDs to individual messages. Generally, callers must include
@@ -327,9 +332,12 @@ message MultiRecipientMessage {
 
   /**
    * The time, in milliseconds since the epoch, at which this message was
-   * originally sent from the perspective of the sender.
+   * originally sent from the perspective of the sender. Note that the maximum
+   * allowable timestamp for JavaScript clients is less than Long.MAX_VALUE; see
+   * https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date#the_epoch_timestamps_and_invalid_date
+   * for additional details and discussion.
    */
-  uint64 timestamp = 1;
+  uint64 timestamp = 1 [(require.range).min = 1, (require.range).max = 8640000000000000];
 
   /**
    * The serialized multi-recipient message payload.

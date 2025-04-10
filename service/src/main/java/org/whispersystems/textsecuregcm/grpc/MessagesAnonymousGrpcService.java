@@ -5,6 +5,7 @@
 
 package org.whispersystems.textsecuregcm.grpc;
 
+import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import java.time.Clock;
@@ -12,7 +13,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import org.signal.chat.messages.IndividualRecipientMessageBundle;
-import org.signal.chat.messages.MismatchedDevices;
 import org.signal.chat.messages.MultiRecipientMismatchedDevices;
 import org.signal.chat.messages.SendMessageResponse;
 import org.signal.chat.messages.SendMultiRecipientMessageRequest;
@@ -25,7 +25,6 @@ import org.signal.libsignal.protocol.InvalidMessageException;
 import org.signal.libsignal.protocol.InvalidVersionException;
 import org.signal.libsignal.protocol.SealedSenderMultiRecipientMessage;
 import org.whispersystems.textsecuregcm.auth.UnidentifiedAccessUtil;
-import org.whispersystems.textsecuregcm.controllers.MismatchedDevicesException;
 import org.whispersystems.textsecuregcm.controllers.MultiRecipientMismatchedDevicesException;
 import org.whispersystems.textsecuregcm.controllers.RateLimitExceededException;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
@@ -161,16 +160,22 @@ public class MessagesAnonymousGrpcService extends SimpleMessagesAnonymousGrpc.Me
         .stream()
         .collect(Collectors.toMap(
             entry -> DeviceIdUtil.validate(entry.getKey()),
-            entry -> MessageProtos.Envelope.newBuilder()
-                .setType(MessageProtos.Envelope.Type.UNIDENTIFIED_SENDER)
-                .setClientTimestamp(messages.getTimestamp())
-                .setServerTimestamp(clock.millis())
-                .setDestinationServiceId(destinationServiceIdentifier.toServiceIdentifierString())
-                .setEphemeral(ephemeral)
-                .setUrgent(urgent)
-                .setStory(story)
-                .setContent(entry.getValue().getPayload())
-                .build()
+            entry -> {
+              final MessageProtos.Envelope.Builder envelopeBuilder = MessageProtos.Envelope.newBuilder()
+                  .setType(MessageProtos.Envelope.Type.UNIDENTIFIED_SENDER)
+                  .setClientTimestamp(messages.getTimestamp())
+                  .setServerTimestamp(clock.millis())
+                  .setDestinationServiceId(destinationServiceIdentifier.toServiceIdentifierString())
+                  .setEphemeral(ephemeral)
+                  .setUrgent(urgent)
+                  .setStory(story)
+                  .setContent(entry.getValue().getPayload());
+
+              spamCheckResult.token().ifPresent(reportSpamToken ->
+                  envelopeBuilder.setReportSpamToken(ByteString.copyFrom(reportSpamToken)));
+
+              return envelopeBuilder.build();
+            }
         ));
 
     final Map<Byte, Integer> registrationIdsByDeviceId = messages.getMessagesMap().entrySet().stream()
@@ -178,21 +183,11 @@ public class MessagesAnonymousGrpcService extends SimpleMessagesAnonymousGrpc.Me
             entry -> entry.getKey().byteValue(),
             entry -> entry.getValue().getRegistrationId()));
 
-    try {
-      messageSender.sendMessages(destination,
-          destinationServiceIdentifier,
-          messagesByDeviceId,
-          registrationIdsByDeviceId,
-          RequestAttributesUtil.getRawUserAgent().orElse(null));
-
-      return SEND_MESSAGE_SUCCESS_RESPONSE;
-    } catch (final MismatchedDevicesException e) {
-      return SendMessageResponse.newBuilder()
-          .setMismatchedDevices(buildMismatchedDevices(destinationServiceIdentifier, e.getMismatchedDevices()))
-          .build();
-    } catch (final MessageTooLargeException e) {
-      throw Status.INVALID_ARGUMENT.withDescription("Message too large").withCause(e).asException();
-    }
+    return MessagesGrpcHelper.sendMessage(messageSender,
+        destination,
+        destinationServiceIdentifier,
+        messagesByDeviceId,
+        registrationIdsByDeviceId);
   }
 
   @Override
@@ -276,7 +271,7 @@ public class MessagesAnonymousGrpcService extends SimpleMessagesAnonymousGrpc.Me
           MultiRecipientMismatchedDevices.newBuilder();
 
       e.getMismatchedDevicesByServiceIdentifier().forEach((serviceIdentifier, mismatchedDevices) ->
-          mismatchedDevicesBuilder.addMismatchedDevices(buildMismatchedDevices(serviceIdentifier, mismatchedDevices)));
+          mismatchedDevicesBuilder.addMismatchedDevices(MessagesGrpcHelper.buildMismatchedDevices(serviceIdentifier, mismatchedDevices)));
 
       return SendMultiRecipientMessageResponse.newBuilder()
           .setMismatchedDevices(mismatchedDevicesBuilder)
@@ -302,18 +297,5 @@ public class MessagesAnonymousGrpcService extends SimpleMessagesAnonymousGrpc.Me
     }
 
     return multiRecipientMessage;
-  }
-
-  private MismatchedDevices buildMismatchedDevices(final ServiceIdentifier serviceIdentifier,
-      org.whispersystems.textsecuregcm.controllers.MismatchedDevices mismatchedDevices) {
-
-    final MismatchedDevices.Builder mismatchedDevicesBuilder = MismatchedDevices.newBuilder()
-        .setServiceIdentifier(ServiceIdentifierUtil.toGrpcServiceIdentifier(serviceIdentifier));
-
-    mismatchedDevices.missingDeviceIds().forEach(mismatchedDevicesBuilder::addMissingDevices);
-    mismatchedDevices.extraDeviceIds().forEach(mismatchedDevicesBuilder::addExtraDevices);
-    mismatchedDevices.staleDeviceIds().forEach(mismatchedDevicesBuilder::addStaleDevices);
-
-    return mismatchedDevicesBuilder.build();
   }
 }
