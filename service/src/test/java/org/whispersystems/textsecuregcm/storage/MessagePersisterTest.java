@@ -54,6 +54,7 @@ import org.mockito.stubbing.Answer;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicMessagePersisterConfiguration;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
+import org.whispersystems.textsecuregcm.experiment.ExperimentEnrollmentManager;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.redis.RedisClusterExtension;
 import org.whispersystems.textsecuregcm.tests.util.DevicesHelper;
@@ -118,7 +119,7 @@ class MessagePersisterTest {
     messagesCache = new MessagesCache(REDIS_CLUSTER_EXTENSION.getRedisCluster(),
         messageDeliveryScheduler, sharedExecutorService, Clock.systemUTC());
     messagePersister = new MessagePersister(messagesCache, messagesManager, accountsManager,
-        dynamicConfigurationManager, PERSIST_DELAY, 1);
+        dynamicConfigurationManager, mock(ExperimentEnrollmentManager.class), PERSIST_DELAY, 1);
 
     when(messagesManager.clear(any(UUID.class), anyByte())).thenReturn(CompletableFuture.completedFuture(null));
 
@@ -257,7 +258,7 @@ class MessagePersisterTest {
 
     assertTimeoutPreemptively(Duration.ofSeconds(1), () ->
         assertThrows(MessagePersistenceException.class,
-            () -> messagePersister.persistQueue(destinationAccount, DESTINATION_DEVICE)));
+            () -> messagePersister.persistQueue(destinationAccount, DESTINATION_DEVICE, "test")));
   }
 
   @Test
@@ -298,7 +299,7 @@ class MessagePersisterTest {
     when(messagesManager.persistMessages(any(UUID.class), any(), anyList())).thenThrow(ItemCollectionSizeLimitExceededException.builder().build());
 
     assertTimeoutPreemptively(Duration.ofSeconds(1), () ->
-        messagePersister.persistQueue(destinationAccount, DESTINATION_DEVICE));
+        messagePersister.persistQueue(destinationAccount, DESTINATION_DEVICE, "test"));
     verify(accountsManager, exactly()).removeDevice(destinationAccount, DESTINATION_DEVICE_ID);
   }
 
@@ -400,7 +401,7 @@ class MessagePersisterTest {
     when(messagesManager.persistMessages(any(UUID.class), any(), anyList())).thenThrow(ItemCollectionSizeLimitExceededException.builder().build());
     when(accountsManager.removeDevice(destinationAccount, DESTINATION_DEVICE_ID)).thenReturn(CompletableFuture.failedFuture(new TimeoutException()));
 
-    assertThrows(CompletionException.class, () -> messagePersister.persistQueue(destinationAccount, DESTINATION_DEVICE));
+    assertThrows(CompletionException.class, () -> messagePersister.persistQueue(destinationAccount, DESTINATION_DEVICE, "test"));
   }
 
   @SuppressWarnings("SameParameterValue")

@@ -47,6 +47,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
 import org.glassfish.jersey.server.ManagedAsync;
 import org.signal.libsignal.protocol.IdentityKey;
 import org.signal.libsignal.protocol.ServiceId;
@@ -123,6 +124,7 @@ public class ProfileController {
   private static final String EXPIRING_PROFILE_KEY_CREDENTIAL_TYPE = "expiringProfileKey";
 
   private static final String VERSION_NOT_FOUND_COUNTER_NAME = name(ProfileController.class, "versionNotFound");
+  private static final String DUPLICATE_AUTHENTICATION_COUNTER_NAME = name(ProfileController.class, "duplicateAuthentication");
 
   public ProfileController(
       Clock clock,
@@ -230,11 +232,12 @@ public class ProfileController {
       @HeaderParam(HeaderUtils.UNIDENTIFIED_ACCESS_KEY) Optional<Anonymous> accessKey,
       @Context ContainerRequestContext containerRequestContext,
       @PathParam("identifier") AciServiceIdentifier accountIdentifier,
-      @PathParam("version") String version)
+      @PathParam("version") String version,
+      @HeaderParam(HttpHeaders.USER_AGENT) String userAgent)
       throws RateLimitExceededException {
 
     final Optional<Account> maybeRequester = auth.map(AuthenticatedDevice::getAccount);
-    final Account targetAccount = verifyPermissionToReceiveProfile(maybeRequester, accessKey, accountIdentifier);
+    final Account targetAccount = verifyPermissionToReceiveProfile(maybeRequester, accessKey, accountIdentifier, "getVersionedProfile", userAgent);
 
     return buildVersionedProfileResponse(targetAccount,
         version,
@@ -253,7 +256,8 @@ public class ProfileController {
       @PathParam("identifier") AciServiceIdentifier accountIdentifier,
       @PathParam("version") String version,
       @PathParam("credentialRequest") String credentialRequest,
-      @QueryParam("credentialType") String credentialType)
+      @QueryParam("credentialType") String credentialType,
+      @HeaderParam(HttpHeaders.USER_AGENT) String userAgent)
       throws RateLimitExceededException {
 
     if (!EXPIRING_PROFILE_KEY_CREDENTIAL_TYPE.equals(credentialType)) {
@@ -261,7 +265,7 @@ public class ProfileController {
     }
 
     final Optional<Account> maybeRequester = auth.map(AuthenticatedDevice::getAccount);
-    final Account targetAccount = verifyPermissionToReceiveProfile(maybeRequester, accessKey, accountIdentifier);
+    final Account targetAccount = verifyPermissionToReceiveProfile(maybeRequester, accessKey, accountIdentifier, "credentialRequest", userAgent);
     final boolean isSelf = maybeRequester.map(requester -> ProfileHelper.isSelfProfileRequest(requester.getUuid(), accountIdentifier)).orElse(false);
 
     return buildExpiringProfileKeyCredentialProfileResponse(targetAccount,
@@ -283,8 +287,7 @@ public class ProfileController {
       @HeaderParam(HeaderUtils.GROUP_SEND_TOKEN) Optional<GroupSendTokenHeader> groupSendToken,
       @Context ContainerRequestContext containerRequestContext,
       @HeaderParam(HttpHeaders.USER_AGENT) String userAgent,
-      @PathParam("identifier") ServiceIdentifier identifier,
-      @QueryParam("ca") boolean useCaCertificate)
+      @PathParam("identifier") ServiceIdentifier identifier)
       throws RateLimitExceededException {
 
     final Optional<Account> maybeRequester = auth.map(AuthenticatedDevice::getAccount);
@@ -303,7 +306,7 @@ public class ProfileController {
       }
     } else {
       targetAccount = verifyPermissionToReceiveProfile(
-          maybeRequester, accessKey.filter(ignored -> identifier.identityType() == IdentityType.ACI), identifier);
+          maybeRequester, accessKey.filter(ignored -> identifier.identityType() == IdentityType.ACI), identifier, "getUnversionedProfile", userAgent);
     }
     return switch (identifier.identityType()) {
       case ACI -> buildBaseProfileResponseForAccountIdentity(targetAccount,
@@ -386,7 +389,7 @@ public class ProfileController {
             profileKeyCredentialResponse = ProfileHelper.getExpiringProfileKeyCredential(HexFormat.of().parseHex(encodedCredentialRequest),
                 profile, new ServiceId.Aci(account.getUuid()), zkProfileOperations);
           } catch (VerificationFailedException | InvalidInputException e) {
-            throw new BadRequestException(Response.status(Response.Status.BAD_REQUEST).build(), e);
+            throw new BadRequestException(e);
           }
           return profileKeyCredentialResponse;
         })
@@ -474,7 +477,15 @@ public class ProfileController {
    */
   private Account verifyPermissionToReceiveProfile(final Optional<Account> maybeRequester,
       final Optional<Anonymous> maybeAccessKey,
-      final ServiceIdentifier accountIdentifier) throws RateLimitExceededException {
+      final ServiceIdentifier accountIdentifier,
+      final String endpoint,
+      @Nullable final String userAgent) throws RateLimitExceededException {
+
+    if (maybeRequester.isPresent() && maybeAccessKey.isPresent()) {
+      Metrics.counter(DUPLICATE_AUTHENTICATION_COUNTER_NAME,
+          Tags.of(UserAgentTagUtil.getPlatformTag(userAgent), io.micrometer.core.instrument.Tag.of("endpoint", endpoint)))
+          .increment();
+    }
 
     if (maybeRequester.isPresent()) {
       rateLimiters.getProfileLimiter().validate(maybeRequester.get().getUuid());

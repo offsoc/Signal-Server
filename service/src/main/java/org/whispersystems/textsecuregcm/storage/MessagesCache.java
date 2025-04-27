@@ -15,6 +15,8 @@ import io.lettuce.core.Range;
 import io.lettuce.core.ScoredValue;
 import io.lettuce.core.ZAddArgs;
 import io.lettuce.core.cluster.SlotHash;
+import io.lettuce.core.cluster.models.partitions.ClusterPartitionParser;
+import io.lettuce.core.cluster.models.partitions.Partitions;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Tag;
@@ -666,6 +668,15 @@ public class MessagesCache {
         .then()
         .toFuture()
         .thenRun(() -> sample.stop(clearQueueTimer));
+  }
+
+  public String shardForSlot(int slot) {
+    try {
+      return redisCluster.withBinaryCluster(
+          connection -> connection.getPartitions().getPartitionBySlot(slot).getUri().getHost());
+    } catch (Throwable ignored) {
+      return "unknown";
+    }
   }
 
   int getNextSlotToPersist() {

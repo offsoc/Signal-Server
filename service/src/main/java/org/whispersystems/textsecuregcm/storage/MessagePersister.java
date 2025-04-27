@@ -12,10 +12,13 @@ import io.dropwizard.lifecycle.Managed;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
@@ -24,7 +27,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
+import org.whispersystems.textsecuregcm.experiment.ExperimentEnrollmentManager;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
+import org.whispersystems.textsecuregcm.metrics.DevicePlatformUtil;
+import org.whispersystems.textsecuregcm.push.MessageSender;
 import org.whispersystems.textsecuregcm.util.Util;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -37,6 +43,7 @@ public class MessagePersister implements Managed {
   private final MessagesManager messagesManager;
   private final AccountsManager accountsManager;
   private final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager;
+  private final ExperimentEnrollmentManager experimentEnrollmentManager;
 
   private final Duration persistDelay;
 
@@ -44,6 +51,8 @@ public class MessagePersister implements Managed {
   private volatile boolean running;
 
   private static final String OVERSIZED_QUEUE_COUNTER_NAME = name(MessagePersister.class, "persistQueueOversized");
+  private static final String PERSISTED_MESSAGE_COUNTER_NAME = name(MessagePersister.class, "persistMessage");
+  private static final String PERSISTED_BYTES_COUNTER_NAME = name(MessagePersister.class, "persistBytes");
 
   private static final Timer GET_QUEUES_TIMER = Metrics.timer(name(MessagePersister.class, "getQueues"));
   private static final Timer PERSIST_QUEUE_TIMER = Metrics.timer(name(MessagePersister.class, "persistQueue"));
@@ -57,10 +66,7 @@ public class MessagePersister implements Managed {
       .publishPercentileHistogram(true)
       .register(Metrics.globalRegistry);
 
-  private static final DistributionSummary QUEUE_SIZE_DISTRIBUTION_SUMMARY = DistributionSummary.builder(
-          name(MessagePersister.class, "queueSize"))
-      .publishPercentileHistogram(true)
-      .register(Metrics.globalRegistry);
+  private static final String QUEUE_SIZE_DISTRIBUTION_SUMMARY_NAME = name(MessagePersister.class, "queueSize");
 
   static final int QUEUE_BATCH_LIMIT = 100;
   static final int MESSAGE_BATCH_LIMIT = 100;
@@ -75,6 +81,7 @@ public class MessagePersister implements Managed {
       final MessagesManager messagesManager,
       final AccountsManager accountsManager,
       final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager,
+      final ExperimentEnrollmentManager experimentEnrollmentManager,
       final Duration persistDelay,
       final int dedicatedProcessWorkerThreadCount) {
 
@@ -82,6 +89,7 @@ public class MessagePersister implements Managed {
     this.messagesManager = messagesManager;
     this.accountsManager = accountsManager;
     this.dynamicConfigurationManager = dynamicConfigurationManager;
+    this.experimentEnrollmentManager = experimentEnrollmentManager;
     this.persistDelay = persistDelay;
     this.workerThreads = new Thread[dedicatedProcessWorkerThreadCount];
 
@@ -139,6 +147,7 @@ public class MessagePersister implements Managed {
   @VisibleForTesting
   int persistNextQueues(final Instant currentTime) {
     final int slot = messagesCache.getNextSlotToPersist();
+    final String shard = messagesCache.shardForSlot(slot);
 
     List<String> queuesToPersist;
     int queuesPersisted = 0;
@@ -162,10 +171,11 @@ public class MessagePersister implements Managed {
           continue;
         }
         try {
-          persistQueue(maybeAccount.get(), maybeDevice.get());
+          persistQueue(maybeAccount.get(), maybeDevice.get(), shard);
         } catch (final Exception e) {
           PERSIST_QUEUE_EXCEPTION_METER.increment();
-          logger.warn("Failed to persist queue {}::{}; will schedule for retry", accountUuid, deviceId, e);
+          logger.warn("Failed to persist queue {}::{} (slot {}, shard {}); will schedule for retry",
+              accountUuid, deviceId, slot, shard, e);
 
           messagesCache.addQueueToPersist(accountUuid, deviceId);
 
@@ -183,9 +193,13 @@ public class MessagePersister implements Managed {
   }
 
   @VisibleForTesting
-  void persistQueue(final Account account, final Device device) throws MessagePersistenceException {
+  void persistQueue(final Account account, final Device device, final String shard) throws MessagePersistenceException {
     final UUID accountUuid = account.getUuid();
     final byte deviceId = device.getId();
+
+    final Tag platformTag = Tag.of("platform", DevicePlatformUtil.getDevicePlatform(device)
+        .map(platform -> platform.name().toLowerCase(Locale.ROOT))
+        .orElse("unknown"));
 
     final Timer.Sample sample = Timer.start();
 
@@ -199,6 +213,16 @@ public class MessagePersister implements Managed {
 
       do {
         messages = messagesCache.getMessagesToPersist(accountUuid, deviceId, MESSAGE_BATCH_LIMIT);
+
+        final int urgentMessageCount = (int) messages.stream().filter(MessageProtos.Envelope::getUrgent).count();
+        final int nonUrgentMessageCount = messages.size() - urgentMessageCount;
+
+        final Tags tags = Tags.of(platformTag, Tag.of("shard", shard));
+
+        Metrics.counter(PERSISTED_MESSAGE_COUNTER_NAME, tags.and("urgent", "true")).increment(urgentMessageCount);
+        Metrics.counter(PERSISTED_MESSAGE_COUNTER_NAME, tags.and("urgent", "false")).increment(nonUrgentMessageCount);
+        Metrics.counter(PERSISTED_BYTES_COUNTER_NAME, tags)
+            .increment(messages.stream().mapToInt(MessageProtos.Envelope::getSerializedSize).sum());
 
         int messagesRemovedFromCache = messagesManager.persistMessages(accountUuid, device, messages);
         messageCount += messages.size();
@@ -215,7 +239,14 @@ public class MessagePersister implements Managed {
 
       } while (!messages.isEmpty());
 
-      QUEUE_SIZE_DISTRIBUTION_SUMMARY.record(messageCount);
+      final boolean inSkipExperiment = device.getGcmId() != null && experimentEnrollmentManager.isEnrolled(
+          accountUuid,
+          MessageSender.ANDROID_SKIP_LOW_URGENCY_PUSH_EXPERIMENT);
+      DistributionSummary.builder(QUEUE_SIZE_DISTRIBUTION_SUMMARY_NAME)
+          .tags(Tags.of(platformTag).and("lowUrgencySkip", Boolean.toString(inSkipExperiment)))
+          .publishPercentileHistogram(true)
+          .register(Metrics.globalRegistry)
+          .record(messageCount);
     } catch (ItemCollectionSizeLimitExceededException e) {
       final boolean isPrimary = deviceId == Device.PRIMARY_ID;
       Metrics.counter(OVERSIZED_QUEUE_COUNTER_NAME, "primary", String.valueOf(isPrimary)).increment();
@@ -234,7 +265,6 @@ public class MessagePersister implements Managed {
       messagesCache.unlockQueueForPersistence(accountUuid, deviceId);
       sample.stop(PERSIST_QUEUE_TIMER);
     }
-
   }
 
   private void trimQueue(final Account account, byte deviceId) {
