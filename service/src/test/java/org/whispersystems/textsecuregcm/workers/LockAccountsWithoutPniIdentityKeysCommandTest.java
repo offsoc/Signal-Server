@@ -6,8 +6,8 @@
 package org.whispersystems.textsecuregcm.workers;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyByte;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -15,15 +15,13 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import net.sourceforge.argparse4j.inf.Namespace;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.whispersystems.textsecuregcm.entities.KEMSignedPreKey;
+import org.signal.libsignal.protocol.IdentityKey;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
@@ -31,18 +29,16 @@ import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.storage.KeysManager;
 import reactor.core.publisher.Flux;
 
-class LockAccountsWithoutPqKeysCommandTest {
+class LockAccountsWithoutPniIdentityKeysCommandTest {
 
   private AccountsManager accountsManager;
-  private KeysManager keysManager;
 
-  private static class TestLockAccountsWithoutPqKeysCommand extends LockAccountsWithoutPqKeysCommand {
+  private static class TestLockAccountsWithoutPniIdentityKeysCommand extends LockAccountsWithoutPniIdentityKeysCommand {
 
     private final CommandDependencies commandDependencies;
     private final Namespace namespace;
 
-    TestLockAccountsWithoutPqKeysCommand(final AccountsManager accountsManager,
-        final KeysManager keysManager,
+    TestLockAccountsWithoutPniIdentityKeysCommand(final AccountsManager accountsManager,
         final boolean dryRun) {
 
       commandDependencies = new CommandDependencies(accountsManager,
@@ -51,7 +47,7 @@ class LockAccountsWithoutPqKeysCommandTest {
           null,
           null,
           null,
-          keysManager,
+          null,
           null,
           null,
           null,
@@ -86,26 +82,19 @@ class LockAccountsWithoutPqKeysCommandTest {
   @BeforeEach
   void setUp() {
     accountsManager = mock(AccountsManager.class);
-    keysManager = mock(KeysManager.class);
   }
 
   @ParameterizedTest
   @ValueSource(booleans = {true, false})
   void crawlAccounts(final boolean dryRun) {
-    final UUID accountIdentifierWithPqKeys = UUID.randomUUID();
+    final Account accountWithPniIdentityKey = mock(Account.class);
+    when(accountWithPniIdentityKey.getIdentityKey(IdentityType.PNI)).thenReturn(mock(IdentityKey.class));
+    when(accountWithPniIdentityKey.getPrimaryDevice()).thenReturn(mock(Device.class));
 
-    final Account accountWithPqKeys = mock(Account.class);
-    when(accountWithPqKeys.getIdentifier(IdentityType.ACI)).thenReturn(accountIdentifierWithPqKeys);
+    final Account accountWithoutPniIdentityKey = mock(Account.class);
+    when(accountWithoutPniIdentityKey.getIdentityKey(IdentityType.PNI)).thenReturn(null);
+    when(accountWithoutPniIdentityKey.getPrimaryDevice()).thenReturn(mock(Device.class));
 
-    final Account accountWithoutPqKeys = mock(Account.class);
-    when(accountWithoutPqKeys.getIdentifier(IdentityType.ACI)).thenReturn(UUID.randomUUID());
-    when(accountWithoutPqKeys.getPrimaryDevice()).thenReturn(mock(Device.class));
-
-    when(keysManager.getLastResort(any(), anyByte())).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
-    when(keysManager.getLastResort(accountIdentifierWithPqKeys, Device.PRIMARY_ID))
-        .thenReturn(CompletableFuture.completedFuture(Optional.of(mock(KEMSignedPreKey.class))));
-
-    when(accountsManager.delete(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
     when(accountsManager.updateAsync(any(), any())).thenAnswer(invocation -> {
       final Account account = invocation.getArgument(0);
       final Consumer<Account> updater = invocation.getArgument(1);
@@ -115,18 +104,17 @@ class LockAccountsWithoutPqKeysCommandTest {
       return CompletableFuture.completedFuture(account);
     });
 
-    final LockAccountsWithoutPqKeysCommand lockAccountsWithoutPqKeysCommand =
-        new TestLockAccountsWithoutPqKeysCommand(accountsManager, keysManager, dryRun);
+    final LockAccountsWithoutPniIdentityKeysCommand lockAccountsWithoutPniIdentityKeysCommand =
+        new TestLockAccountsWithoutPniIdentityKeysCommand(accountsManager, dryRun);
 
-    lockAccountsWithoutPqKeysCommand.crawlAccounts(Flux.just(accountWithPqKeys, accountWithoutPqKeys));
+    lockAccountsWithoutPniIdentityKeysCommand.crawlAccounts(
+        Flux.just(accountWithPniIdentityKey, accountWithoutPniIdentityKey));
 
-    if (dryRun) {
-      verify(accountsManager, never()).updateAsync(any(), any());
-    } else {
-      verify(accountsManager).updateAsync(eq(accountWithoutPqKeys), any());
-      verifyNoMoreInteractions(accountsManager);
-
-      verify(accountWithoutPqKeys).lockAuthTokenHash();
+    if (!dryRun) {
+      verify(accountsManager).updateAsync(eq(accountWithoutPniIdentityKey), any());
+      verify(accountWithoutPniIdentityKey).lockAuthTokenHash();
     }
+
+    verifyNoMoreInteractions(accountsManager);
   }
 }
