@@ -62,7 +62,6 @@ import java.util.stream.Stream;
 import javax.annotation.Nullable;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.signal.libsignal.protocol.IdentityKey;
 import org.slf4j.Logger;
@@ -274,126 +273,146 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
       final DeviceSpec primaryDeviceSpec,
       @Nullable final String userAgent) throws InterruptedException {
 
-    final Account account = new Account();
     final UUID pni = phoneNumberIdentifiers.getPhoneNumberIdentifier(number).join();
 
     return createTimer.record(() -> {
-      accountLockManager.withLock(List.of(pni), () -> {
-        final Optional<UUID> maybeRecentlyDeletedAccountIdentifier =
-            accounts.findRecentlyDeletedAccountIdentifier(pni);
-
-        // Reuse the ACI from any recently-deleted account with this number to cover cases where somebody is
-        // re-registering.
-        account.setUuid(maybeRecentlyDeletedAccountIdentifier.orElseGet(UUID::randomUUID));
-        account.setNumber(number, pni);
-        account.setIdentityKey(aciIdentityKey);
-        account.setPhoneNumberIdentityKey(pniIdentityKey);
-        account.addDevice(primaryDeviceSpec.toDevice(Device.PRIMARY_ID, clock));
-        account.setRegistrationLockFromAttributes(accountAttributes);
-        account.setUnidentifiedAccessKey(accountAttributes.getUnidentifiedAccessKey());
-        account.setUnrestrictedUnidentifiedAccess(accountAttributes.isUnrestrictedUnidentifiedAccess());
-        account.setDiscoverableByPhoneNumber(accountAttributes.isDiscoverableByPhoneNumber());
-        account.setBadges(clock, accountBadges);
-
-        String accountCreationType = maybeRecentlyDeletedAccountIdentifier.isPresent() ? "recently-deleted" : "new";
-
-        final String pushTokenType;
-
-        if (primaryDeviceSpec.apnRegistrationId().isPresent()) {
-          pushTokenType = "apns";
-        } else if (primaryDeviceSpec.gcmRegistrationId().isPresent()) {
-          pushTokenType = "fcm";
-        } else {
-          pushTokenType = "none";
+      try {
+        return accountLockManager.withLock(List.of(pni),
+            () -> create(number, pni, accountAttributes, accountBadges, aciIdentityKey, pniIdentityKey, primaryDeviceSpec, userAgent), accountLockExecutor);
+      } catch (final Exception e) {
+        if (e instanceof RuntimeException runtimeException) {
+          throw runtimeException;
         }
 
-        String previousPushTokenType = null;
-
-        try {
-          accounts.create(account, keysManager.buildWriteItemsForNewDevice(account.getIdentifier(IdentityType.ACI),
-              account.getIdentifier(IdentityType.PNI),
-              Device.PRIMARY_ID,
-              primaryDeviceSpec.aciSignedPreKey(),
-              primaryDeviceSpec.pniSignedPreKey(),
-              primaryDeviceSpec.aciPqLastResortPreKey(),
-              primaryDeviceSpec.pniPqLastResortPreKey()));
-        } catch (final AccountAlreadyExistsException e) {
-          accountCreationType = "re-registration";
-
-          if (StringUtils.isNotBlank(e.getExistingAccount().getPrimaryDevice().getApnId())) {
-            previousPushTokenType = "apns";
-          } else if (StringUtils.isNotBlank(e.getExistingAccount().getPrimaryDevice().getGcmId())) {
-            previousPushTokenType = "fcm";
-          } else {
-            previousPushTokenType = "none";
-          }
-
-          final UUID aci = e.getExistingAccount().getIdentifier(IdentityType.ACI);
-          account.setUuid(aci);
-
-          final List<TransactWriteItem> additionalWriteItems = Stream.concat(
-                  keysManager.buildWriteItemsForNewDevice(account.getIdentifier(IdentityType.ACI),
-                      account.getIdentifier(IdentityType.PNI),
-                      Device.PRIMARY_ID,
-                      primaryDeviceSpec.aciSignedPreKey(),
-                      primaryDeviceSpec.pniSignedPreKey(),
-                      primaryDeviceSpec.aciPqLastResortPreKey(),
-                      primaryDeviceSpec.pniPqLastResortPreKey()).stream(),
-                  e.getExistingAccount().getDevices()
-                      .stream()
-                      .map(Device::getId)
-                      // No need to clear the keys for the primary device since we'll just overwrite them in the same
-                      // transaction anyhow
-                      .filter(existingDeviceId -> existingDeviceId != Device.PRIMARY_ID)
-                      .flatMap(existingDeviceId ->
-                          keysManager.buildWriteItemsForRemovedDevice(aci, pni, existingDeviceId).stream()))
-              .toList();
-
-          CompletableFuture.allOf(
-                  keysManager.deleteSingleUsePreKeys(aci),
-                  keysManager.deleteSingleUsePreKeys(pni),
-                  messagesManager.clear(aci),
-                  profilesManager.deleteAll(aci))
-              .thenCompose(ignored -> disconnectionRequestManager.requestDisconnection(aci))
-              .thenCompose(ignored -> accounts.reclaimAccount(e.getExistingAccount(), account, additionalWriteItems))
-              .thenCompose(ignored -> {
-                // We should have cleared all messages before overwriting the old account, but more may have arrived
-                // while we were working. Similarly, the old account holder could have added keys or profiles. We'll
-                // largely repeat the cleanup process after creating the account to make sure we really REALLY got
-                // everything.
-                //
-                // We exclude the primary device's repeated-use keys from deletion because new keys were provided as
-                // part of the account creation process, and we don't want to delete the keys that just got added.
-                return CompletableFuture.allOf(keysManager.deleteSingleUsePreKeys(aci),
-                    keysManager.deleteSingleUsePreKeys(pni),
-                    messagesManager.clear(aci),
-                    profilesManager.deleteAll(aci));
-              })
-              .join();
-        }
-
-        redisSet(account);
-
-        Tags tags = Tags.of(UserAgentTagUtil.getPlatformTag(userAgent),
-            Tag.of("type", accountCreationType),
-            Tag.of("hasPushToken", String.valueOf(
-                primaryDeviceSpec.apnRegistrationId().isPresent() || primaryDeviceSpec.gcmRegistrationId()
-                    .isPresent())),
-            Tag.of("pushTokenType", pushTokenType));
-
-        if (StringUtils.isNotBlank(previousPushTokenType)) {
-          tags = tags.and(Tag.of("previousPushTokenType", previousPushTokenType));
-        }
-
-        Metrics.counter(CREATE_COUNTER_NAME, tags).increment();
-
-        accountAttributes.recoveryPassword().ifPresent(registrationRecoveryPassword ->
-            registrationRecoveryPasswordsManager.store(account.getIdentifier(IdentityType.PNI),
-                registrationRecoveryPassword));
-      }, accountLockExecutor);
-
-      return account;
+        logger.error("Unexpected exception while creating account", e);
+        throw new RuntimeException(e);
+      }
     });
+  }
+
+  private Account create(final String number,
+      final UUID pni,
+      final AccountAttributes accountAttributes,
+      final List<AccountBadge> accountBadges,
+      final IdentityKey aciIdentityKey,
+      final IdentityKey pniIdentityKey,
+      final DeviceSpec primaryDeviceSpec,
+      @Nullable final String userAgent) {
+
+    final Account account = new Account();
+    final Optional<UUID> maybeRecentlyDeletedAccountIdentifier =
+        accounts.findRecentlyDeletedAccountIdentifier(pni);
+
+    // Reuse the ACI from any recently-deleted account with this number to cover cases where somebody is
+    // re-registering.
+    account.setUuid(maybeRecentlyDeletedAccountIdentifier.orElseGet(UUID::randomUUID));
+    account.setNumber(number, pni);
+    account.setIdentityKey(aciIdentityKey);
+    account.setPhoneNumberIdentityKey(pniIdentityKey);
+    account.addDevice(primaryDeviceSpec.toDevice(Device.PRIMARY_ID, clock));
+    account.setRegistrationLockFromAttributes(accountAttributes);
+    account.setUnidentifiedAccessKey(accountAttributes.getUnidentifiedAccessKey());
+    account.setUnrestrictedUnidentifiedAccess(accountAttributes.isUnrestrictedUnidentifiedAccess());
+    account.setDiscoverableByPhoneNumber(accountAttributes.isDiscoverableByPhoneNumber());
+    account.setBadges(clock, accountBadges);
+
+    String accountCreationType = maybeRecentlyDeletedAccountIdentifier.isPresent() ? "recently-deleted" : "new";
+
+    final String pushTokenType;
+
+    if (primaryDeviceSpec.apnRegistrationId().isPresent()) {
+      pushTokenType = "apns";
+    } else if (primaryDeviceSpec.gcmRegistrationId().isPresent()) {
+      pushTokenType = "fcm";
+    } else {
+      pushTokenType = "none";
+    }
+
+    String previousPushTokenType = null;
+
+    try {
+      accounts.create(account, keysManager.buildWriteItemsForNewDevice(account.getIdentifier(IdentityType.ACI),
+          account.getIdentifier(IdentityType.PNI),
+          Device.PRIMARY_ID,
+          primaryDeviceSpec.aciSignedPreKey(),
+          primaryDeviceSpec.pniSignedPreKey(),
+          primaryDeviceSpec.aciPqLastResortPreKey(),
+          primaryDeviceSpec.pniPqLastResortPreKey()));
+    } catch (final AccountAlreadyExistsException e) {
+      accountCreationType = "re-registration";
+
+      if (StringUtils.isNotBlank(e.getExistingAccount().getPrimaryDevice().getApnId())) {
+        previousPushTokenType = "apns";
+      } else if (StringUtils.isNotBlank(e.getExistingAccount().getPrimaryDevice().getGcmId())) {
+        previousPushTokenType = "fcm";
+      } else {
+        previousPushTokenType = "none";
+      }
+
+      final UUID aci = e.getExistingAccount().getIdentifier(IdentityType.ACI);
+      account.setUuid(aci);
+
+      final List<TransactWriteItem> additionalWriteItems = Stream.concat(
+              keysManager.buildWriteItemsForNewDevice(account.getIdentifier(IdentityType.ACI),
+                  account.getIdentifier(IdentityType.PNI),
+                  Device.PRIMARY_ID,
+                  primaryDeviceSpec.aciSignedPreKey(),
+                  primaryDeviceSpec.pniSignedPreKey(),
+                  primaryDeviceSpec.aciPqLastResortPreKey(),
+                  primaryDeviceSpec.pniPqLastResortPreKey()).stream(),
+              e.getExistingAccount().getDevices()
+                  .stream()
+                  .map(Device::getId)
+                  // No need to clear the keys for the primary device since we'll just overwrite them in the same
+                  // transaction anyhow
+                  .filter(existingDeviceId -> existingDeviceId != Device.PRIMARY_ID)
+                  .flatMap(existingDeviceId ->
+                      keysManager.buildWriteItemsForRemovedDevice(aci, pni, existingDeviceId).stream()))
+          .toList();
+
+      CompletableFuture.allOf(
+              keysManager.deleteSingleUsePreKeys(aci),
+              keysManager.deleteSingleUsePreKeys(pni),
+              messagesManager.clear(aci),
+              profilesManager.deleteAll(aci))
+          .thenCompose(ignored -> disconnectionRequestManager.requestDisconnection(aci))
+          .thenCompose(ignored -> accounts.reclaimAccount(e.getExistingAccount(), account, additionalWriteItems))
+          .thenCompose(ignored -> {
+            // We should have cleared all messages before overwriting the old account, but more may have arrived
+            // while we were working. Similarly, the old account holder could have added keys or profiles. We'll
+            // largely repeat the cleanup process after creating the account to make sure we really REALLY got
+            // everything.
+            //
+            // We exclude the primary device's repeated-use keys from deletion because new keys were provided as
+            // part of the account creation process, and we don't want to delete the keys that just got added.
+            return CompletableFuture.allOf(keysManager.deleteSingleUsePreKeys(aci),
+                keysManager.deleteSingleUsePreKeys(pni),
+                messagesManager.clear(aci),
+                profilesManager.deleteAll(aci));
+          })
+          .join();
+    }
+
+    redisSet(account);
+
+    Tags tags = Tags.of(UserAgentTagUtil.getPlatformTag(userAgent),
+        Tag.of("type", accountCreationType),
+        Tag.of("hasPushToken", String.valueOf(
+            primaryDeviceSpec.apnRegistrationId().isPresent() || primaryDeviceSpec.gcmRegistrationId()
+                .isPresent())),
+        Tag.of("pushTokenType", pushTokenType));
+
+    if (StringUtils.isNotBlank(previousPushTokenType)) {
+      tags = tags.and(Tag.of("previousPushTokenType", previousPushTokenType));
+    }
+
+    Metrics.counter(CREATE_COUNTER_NAME, tags).increment();
+
+    accountAttributes.recoveryPassword().ifPresent(registrationRecoveryPassword ->
+        registrationRecoveryPasswordsManager.store(account.getIdentifier(IdentityType.PNI),
+            registrationRecoveryPassword));
+
+    return account;
   }
 
   public CompletableFuture<Pair<Account, Device>> addDevice(final Account account, final DeviceSpec deviceSpec, final String linkDeviceToken) {
@@ -641,139 +660,149 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   }
 
   public Account changeNumber(final Account account,
-                              final String targetNumber,
-                              @Nullable final IdentityKey pniIdentityKey,
-      @Nullable final Map<Byte, ECSignedPreKey> pniSignedPreKeys,
-      @Nullable final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys,
-      @Nullable final Map<Byte, Integer> pniRegistrationIds) throws InterruptedException, MismatchedDevicesException {
+      final String targetNumber,
+      final IdentityKey pniIdentityKey,
+      final Map<Byte, ECSignedPreKey> pniSignedPreKeys,
+      final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys,
+      final Map<Byte, Integer> pniRegistrationIds) throws InterruptedException, MismatchedDevicesException {
 
     final UUID originalPhoneNumberIdentifier = account.getPhoneNumberIdentifier();
     final UUID targetPhoneNumberIdentifier = phoneNumberIdentifiers.getPhoneNumberIdentifier(targetNumber).join();
 
     if (originalPhoneNumberIdentifier.equals(targetPhoneNumberIdentifier)) {
-      if (pniIdentityKey != null) {
-        throw new IllegalArgumentException("change number must supply a changed phone number; otherwise use updatePniKeys");
-      }
       return account;
     }
 
-    validateDevices(account, pniSignedPreKeys, pniPqLastResortPreKeys, pniRegistrationIds);
-
-    final AtomicReference<Account> updatedAccount = new AtomicReference<>();
-
-    accountLockManager.withLock(List.of(account.getPhoneNumberIdentifier(), targetPhoneNumberIdentifier), () -> {
-      redisDelete(account);
-
-      // There are three possible states for accounts associated with the target phone number:
-      //
-      // 1. An account exists with the target PNI; the caller has proved ownership of the number, so delete the
-      //    account with the target PNI. This will leave a "deleted account" record for the deleted account mapping
-      //    the UUID of the deleted account to the target PNI. We'll then overwrite that so it points to the
-      //    original PNI to facilitate switching back and forth between numbers.
-      // 2. No account with the target PNI exists, but one has recently been deleted. In that case, add a "deleted
-      //    account" record that maps the ACI of the recently-deleted account to the now-abandoned original PNI
-      //    of the account changing its number (which facilitates ACI consistency in cases that a party is switching
-      //    back and forth between numbers).
-      // 3. No account with the target PNI exists at all, in which case no additional action is needed.
-      final Optional<UUID> recentlyDeletedAci = accounts.findRecentlyDeletedAccountIdentifier(targetPhoneNumberIdentifier);
-      final Optional<Account> maybeExistingAccount = getByE164(targetNumber);
-      final Optional<UUID> maybeDisplacedUuid;
-
-      if (maybeExistingAccount.isPresent()) {
-        delete(maybeExistingAccount.get()).join();
-        maybeDisplacedUuid = maybeExistingAccount.map(Account::getUuid);
-      } else {
-        maybeDisplacedUuid = recentlyDeletedAci;
+    try {
+      return accountLockManager.withLock(List.of(account.getPhoneNumberIdentifier(), targetPhoneNumberIdentifier),
+          () -> changeNumber(account, targetNumber, targetPhoneNumberIdentifier, pniIdentityKey, pniSignedPreKeys, pniPqLastResortPreKeys, pniRegistrationIds), accountLockExecutor);
+    } catch (final Exception e) {
+      if (e instanceof MismatchedDevicesException mismatchedDevicesException) {
+        throw mismatchedDevicesException;
+      } if (e instanceof RuntimeException runtimeException) {
+        throw runtimeException;
       }
 
-      final UUID uuid = account.getUuid();
+      logger.error("Unexpected exception when changing phone number", e);
+      throw new RuntimeException(e);
+    }
+  }
 
-      CompletableFuture.allOf(
-              keysManager.deleteSingleUsePreKeys(targetPhoneNumberIdentifier),
-              keysManager.deleteSingleUsePreKeys(originalPhoneNumberIdentifier))
-          .join();
+  private Account changeNumber(final Account account,
+      final String targetNumber,
+      final UUID targetPhoneNumberIdentifier,
+      final IdentityKey pniIdentityKey,
+      final Map<Byte, ECSignedPreKey> pniSignedPreKeys,
+      final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys,
+      final Map<Byte, Integer> pniRegistrationIds) throws MismatchedDevicesException {
+
+    validateDevices(account, pniSignedPreKeys, pniPqLastResortPreKeys, pniRegistrationIds);
+
+    final UUID originalPhoneNumberIdentifier = account.getPhoneNumberIdentifier();
+
+    redisDelete(account);
+
+    // There are three possible states for accounts associated with the target phone number:
+    //
+    // 1. An account exists with the target PNI; the caller has proved ownership of the number, so delete the
+    //    account with the target PNI. This will leave a "deleted account" record for the deleted account mapping
+    //    the UUID of the deleted account to the target PNI. We'll then overwrite that so it points to the
+    //    original PNI to facilitate switching back and forth between numbers.
+    // 2. No account with the target PNI exists, but one has recently been deleted. In that case, add a "deleted
+    //    account" record that maps the ACI of the recently-deleted account to the now-abandoned original PNI
+    //    of the account changing its number (which facilitates ACI consistency in cases that a party is switching
+    //    back and forth between numbers).
+    // 3. No account with the target PNI exists at all, in which case no additional action is needed.
+    final Optional<UUID> recentlyDeletedAci = accounts.findRecentlyDeletedAccountIdentifier(targetPhoneNumberIdentifier);
+    final Optional<Account> maybeExistingAccount = getByE164(targetNumber);
+    final Optional<UUID> maybeDisplacedUuid;
+
+    if (maybeExistingAccount.isPresent()) {
+      delete(maybeExistingAccount.get()).join();
+      maybeDisplacedUuid = maybeExistingAccount.map(Account::getUuid);
+    } else {
+      maybeDisplacedUuid = recentlyDeletedAci;
+    }
+
+    final UUID uuid = account.getUuid();
+
+    CompletableFuture.allOf(
+            keysManager.deleteSingleUsePreKeys(targetPhoneNumberIdentifier),
+            keysManager.deleteSingleUsePreKeys(originalPhoneNumberIdentifier))
+        .join();
 
       final Collection<TransactWriteItem> keyWriteItems =
-          buildPniKeyWriteItems(uuid, targetPhoneNumberIdentifier, pniSignedPreKeys, pniPqLastResortPreKeys);
+          buildPniKeyWriteItems(targetPhoneNumberIdentifier, pniSignedPreKeys, pniPqLastResortPreKeys);
 
-      final Account numberChangedAccount = updateWithRetries(
-          account,
-          a -> {
-            setPniKeys(account, pniIdentityKey, pniRegistrationIds);
-            return true;
-          },
-          a -> accounts.changeNumber(a, targetNumber, targetPhoneNumberIdentifier, maybeDisplacedUuid, keyWriteItems),
-          () -> accounts.getByAccountIdentifier(uuid).orElseThrow(),
-          AccountChangeValidator.NUMBER_CHANGE_VALIDATOR);
-
-      updatedAccount.set(numberChangedAccount);
-    }, accountLockExecutor);
-
-    return updatedAccount.get();
+    return updateWithRetries(
+        account,
+        a -> {
+          setPniKeys(account, pniIdentityKey, pniRegistrationIds);
+          return true;
+        },
+        a -> accounts.changeNumber(a, targetNumber, targetPhoneNumberIdentifier, maybeDisplacedUuid, keyWriteItems),
+        () -> accounts.getByAccountIdentifier(uuid).orElseThrow(),
+        AccountChangeValidator.NUMBER_CHANGE_VALIDATOR);
   }
 
   public Account updatePniKeys(final Account account,
       final IdentityKey pniIdentityKey,
       final Map<Byte, ECSignedPreKey> pniSignedPreKeys,
-      @Nullable final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys,
+      final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys,
       final Map<Byte, Integer> pniRegistrationIds) throws MismatchedDevicesException {
 
-    validateDevices(account, pniSignedPreKeys, pniPqLastResortPreKeys, pniRegistrationIds);
+    try {
+      return accountLockManager.withLock(List.of(account.getIdentifier(IdentityType.PNI)), () -> {
+        validateDevices(account, pniSignedPreKeys, pniPqLastResortPreKeys, pniRegistrationIds);
 
-    final UUID aci = account.getIdentifier(IdentityType.ACI);
-    final UUID pni = account.getIdentifier(IdentityType.PNI);
+        final UUID aci = account.getIdentifier(IdentityType.ACI);
+        final UUID pni = account.getIdentifier(IdentityType.PNI);
 
-    final Collection<TransactWriteItem> keyWriteItems =
-        buildPniKeyWriteItems(pni, pni, pniSignedPreKeys, pniPqLastResortPreKeys);
+        final Collection<TransactWriteItem> keyWriteItems =
+            buildPniKeyWriteItems(pni, pniSignedPreKeys, pniPqLastResortPreKeys);
 
-    return redisDeleteAsync(account)
-        .thenCompose(ignored -> keysManager.deleteSingleUsePreKeys(pni))
-        .thenCompose(ignored -> updateTransactionallyWithRetriesAsync(account,
-            a -> setPniKeys(a, pniIdentityKey, pniRegistrationIds),
-            accounts::updateTransactionallyAsync,
-            () -> accounts.getByAccountIdentifierAsync(aci).thenApply(Optional::orElseThrow),
-            a -> keyWriteItems,
-            AccountChangeValidator.GENERAL_CHANGE_VALIDATOR,
-            MAX_UPDATE_ATTEMPTS))
-        .join();
+        return redisDeleteAsync(account)
+            .thenCompose(ignored -> keysManager.deleteSingleUsePreKeys(pni))
+            .thenCompose(ignored -> updateTransactionallyWithRetriesAsync(account,
+                a -> setPniKeys(a, pniIdentityKey, pniRegistrationIds),
+                accounts::updateTransactionallyAsync,
+                () -> accounts.getByAccountIdentifierAsync(aci).thenApply(Optional::orElseThrow),
+                a -> keyWriteItems,
+                AccountChangeValidator.GENERAL_CHANGE_VALIDATOR,
+                MAX_UPDATE_ATTEMPTS))
+            .join();
+      }, accountLockExecutor);
+    } catch (final Exception e) {
+      if (e instanceof MismatchedDevicesException mismatchedDevicesException) {
+        throw mismatchedDevicesException;
+      } else if (e instanceof RuntimeException runtimeException) {
+        throw runtimeException;
+      }
+
+      logger.error("Unexpected exception when updating PNI key material", e);
+      throw new RuntimeException(e);
+    }
   }
 
   private Collection<TransactWriteItem> buildPniKeyWriteItems(
-      final UUID enabledDevicesIdentifier,
       final UUID phoneNumberIdentifier,
-      @Nullable final Map<Byte, ECSignedPreKey> pniSignedPreKeys,
-      @Nullable final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys) {
+      final Map<Byte, ECSignedPreKey> pniSignedPreKeys,
+      final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys) {
 
     final List<TransactWriteItem> keyWriteItems = new ArrayList<>();
 
-    if (pniSignedPreKeys != null) {
-      pniSignedPreKeys.forEach((deviceId, signedPreKey) ->
-          keyWriteItems.add(keysManager.buildWriteItemForEcSignedPreKey(phoneNumberIdentifier, deviceId, signedPreKey)));
-    }
+    pniSignedPreKeys.forEach((deviceId, signedPreKey) ->
+        keyWriteItems.add(keysManager.buildWriteItemForEcSignedPreKey(phoneNumberIdentifier, deviceId, signedPreKey)));
 
-    if (pniPqLastResortPreKeys != null) {
-      keysManager.getPqEnabledDevices(enabledDevicesIdentifier)
-          .thenAccept(deviceIds -> deviceIds.stream()
-              .filter(pniPqLastResortPreKeys::containsKey)
-              .map(deviceId -> keysManager.buildWriteItemForLastResortKey(phoneNumberIdentifier,
-                  deviceId,
-                  pniPqLastResortPreKeys.get(deviceId)))
-              .forEach(keyWriteItems::add))
-          .join();
-    }
+    pniPqLastResortPreKeys.forEach((deviceId, lastResortKey) ->
+        keyWriteItems.add(keysManager.buildWriteItemForLastResortKey(phoneNumberIdentifier, deviceId, lastResortKey)));
 
     return keyWriteItems;
   }
 
   private void setPniKeys(final Account account,
-      @Nullable final IdentityKey pniIdentityKey,
-      @Nullable final Map<Byte, Integer> pniRegistrationIds) {
-
-    if (ObjectUtils.allNull(pniIdentityKey, pniRegistrationIds)) {
-      return;
-    } else if (!ObjectUtils.allNotNull(pniIdentityKey, pniRegistrationIds)) {
-      throw new IllegalArgumentException("PNI identity key and registration IDs must be all null or all non-null");
-    }
+      final IdentityKey pniIdentityKey,
+      final Map<Byte, Integer> pniRegistrationIds) {
 
     account.getDevices()
         .forEach(device -> device.setPhoneNumberIdentityRegistrationId(pniRegistrationIds.get(device.getId())));
@@ -782,22 +811,15 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   }
 
   private void validateDevices(final Account account,
-      @Nullable final Map<Byte, ECSignedPreKey> pniSignedPreKeys,
-      @Nullable final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys,
-      @Nullable final Map<Byte, Integer> pniRegistrationIds) throws MismatchedDevicesException {
-    if (pniSignedPreKeys == null && pniRegistrationIds == null) {
-      return;
-    } else if (pniSignedPreKeys == null || pniRegistrationIds == null) {
-      throw new IllegalArgumentException("Signed pre-keys and registration IDs must both be null or both be non-null");
-    }
+      final Map<Byte, ECSignedPreKey> pniSignedPreKeys,
+      final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys,
+      final Map<Byte, Integer> pniRegistrationIds) throws MismatchedDevicesException {
 
     // Check that all including primary ID are in signed pre-keys
     validateCompleteDeviceList(account, pniSignedPreKeys.keySet());
 
     // Check that all including primary ID are in Pq pre-keys
-    if (pniPqLastResortPreKeys != null) {
-      validateCompleteDeviceList(account, pniPqLastResortPreKeys.keySet());
-    }
+    validateCompleteDeviceList(account, pniPqLastResortPreKeys.keySet());
 
     // Check that all devices are accounted for in the map of new PNI registration IDs
     validateCompleteDeviceList(account, pniRegistrationIds.keySet());
@@ -816,8 +838,7 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     extraDeviceIds.removeAll(accountDeviceIds);
 
     if (!missingDeviceIds.isEmpty() || !extraDeviceIds.isEmpty()) {
-      throw new MismatchedDevicesException(
-          new MismatchedDevices(missingDeviceIds, extraDeviceIds, Collections.emptySet()));
+      throw new MismatchedDevicesException(new MismatchedDevices(missingDeviceIds, extraDeviceIds, Set.of()));
     }
   }
 

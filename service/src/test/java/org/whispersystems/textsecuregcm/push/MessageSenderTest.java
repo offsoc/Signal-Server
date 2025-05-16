@@ -12,7 +12,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyByte;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -23,7 +22,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -94,7 +92,7 @@ class MessageSenderTest {
     when(account.getDevices()).thenReturn(List.of(device));
     when(account.getDevice(deviceId)).thenReturn(Optional.of(device));
     when(device.getId()).thenReturn(deviceId);
-    when(device.getRegistrationId()).thenReturn(registrationId);
+    when(device.getRegistrationId(IdentityType.ACI)).thenReturn(registrationId);
 
     if (hasPushToken) {
       when(device.getApnId()).thenReturn("apns-token");
@@ -142,7 +140,7 @@ class MessageSenderTest {
     when(account.getDevices()).thenReturn(List.of(device));
     when(account.getDevice(deviceId)).thenReturn(Optional.of(device));
     when(device.getId()).thenReturn(deviceId);
-    when(device.getRegistrationId()).thenReturn(registrationId);
+    when(device.getRegistrationId(IdentityType.ACI)).thenReturn(registrationId);
     when(device.getApnId()).thenReturn("apns-token");
 
     final MismatchedDevicesException mismatchedDevicesException =
@@ -180,7 +178,7 @@ class MessageSenderTest {
     when(account.getDevices()).thenReturn(List.of(device));
     when(account.getDevice(deviceId)).thenReturn(Optional.of(device));
     when(device.getId()).thenReturn(deviceId);
-    when(device.getRegistrationId()).thenReturn(registrationId);
+    when(device.getRegistrationId(IdentityType.ACI)).thenReturn(registrationId);
     when(device.getApnId()).thenReturn("apns-token");
 
     if (hasPushToken) {
@@ -232,7 +230,7 @@ class MessageSenderTest {
     when(account.getDevices()).thenReturn(List.of(device));
     when(account.getDevice(deviceId)).thenReturn(Optional.of(device));
     when(device.getId()).thenReturn(deviceId);
-    when(device.getRegistrationId()).thenReturn(registrationId);
+    when(device.getRegistrationId(IdentityType.ACI)).thenReturn(registrationId);
     when(device.getApnId()).thenReturn("apns-token");
 
     final SealedSenderMultiRecipientMessage multiRecipientMessage =
@@ -293,13 +291,13 @@ class MessageSenderTest {
 
     final Device primaryDevice = mock(Device.class);
     when(primaryDevice.getId()).thenReturn(primaryDeviceId);
-    when(primaryDevice.getRegistrationId()).thenReturn(primaryDeviceAciRegistrationId);
-    when(primaryDevice.getPhoneNumberIdentityRegistrationId()).thenReturn(OptionalInt.of(primaryDevicePniRegistrationId));
+    when(primaryDevice.getRegistrationId(IdentityType.ACI)).thenReturn(primaryDeviceAciRegistrationId);
+    when(primaryDevice.getRegistrationId(IdentityType.PNI)).thenReturn(primaryDevicePniRegistrationId);
 
     final Device linkedDevice = mock(Device.class);
     when(linkedDevice.getId()).thenReturn(linkedDeviceId);
-    when(linkedDevice.getRegistrationId()).thenReturn(linkedDeviceAciRegistrationId);
-    when(linkedDevice.getPhoneNumberIdentityRegistrationId()).thenReturn(OptionalInt.of(linkedDevicePniRegistrationId));
+    when(linkedDevice.getRegistrationId(IdentityType.ACI)).thenReturn(linkedDeviceAciRegistrationId);
+    when(linkedDevice.getRegistrationId(IdentityType.PNI)).thenReturn(linkedDevicePniRegistrationId);
 
     final Account account = mock(Account.class);
     when(account.getDevices()).thenReturn(List.of(primaryDevice, linkedDevice));

@@ -240,8 +240,7 @@ public class KeysController {
   @ApiResponse(responseCode = "422", description = "Invalid request format")
   public CompletableFuture<Response> checkKeys(
       @ReadOnly @Auth final AuthenticatedDevice auth,
-      @RequestBody @NotNull @Valid final CheckKeysRequest checkKeysRequest,
-      @HeaderParam(HttpHeaders.USER_AGENT) final String userAgent) {
+      @RequestBody @NotNull @Valid final CheckKeysRequest checkKeysRequest) {
 
     final UUID identifier = auth.getAccount().getIdentifier(checkKeysRequest.identityType());
     final byte deviceId = auth.getAuthenticatedDevice().getId();
@@ -382,10 +381,7 @@ public class KeysController {
                     .increment();
 
                 if (signedEcPreKey != null || unsignedEcPreKey != null || pqPreKey != null) {
-                  final int registrationId = switch (targetIdentifier.identityType()) {
-                    case ACI -> device.getRegistrationId();
-                    case PNI -> device.getPhoneNumberIdentityRegistrationId().orElse(device.getRegistrationId());
-                  };
+                  final int registrationId = device.getRegistrationId(targetIdentifier.identityType());
 
                   responseItems.add(
                       new PreKeyResponseItem(device.getId(), registrationId, signedEcPreKey, unsignedEcPreKey,

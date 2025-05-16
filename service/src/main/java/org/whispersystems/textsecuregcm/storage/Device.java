@@ -20,6 +20,7 @@ import java.util.stream.IntStream;
 import javax.annotation.Nullable;
 import com.google.common.annotations.VisibleForTesting;
 import org.whispersystems.textsecuregcm.auth.SaltedTokenHash;
+import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.util.DeviceCapabilityAdapter;
 import org.whispersystems.textsecuregcm.util.DeviceNameByteArrayAdapter;
 
@@ -64,9 +65,8 @@ public class Device {
   @JsonProperty
   private int registrationId;
 
-  @Nullable
   @JsonProperty("pniRegistrationId")
-  private Integer phoneNumberIdentityRegistrationId;
+  private int phoneNumberIdentityRegistrationId;
 
   @JsonProperty
   private long lastSeen;
@@ -208,16 +208,15 @@ public class Device {
     return getId() == PRIMARY_ID;
   }
 
-  public int getRegistrationId() {
-    return registrationId;
+  public int getRegistrationId(final IdentityType identityType) {
+    return switch (identityType) {
+      case ACI -> registrationId;
+      case PNI -> phoneNumberIdentityRegistrationId;
+    };
   }
 
   public void setRegistrationId(int registrationId) {
     this.registrationId = registrationId;
-  }
-
-  public OptionalInt getPhoneNumberIdentityRegistrationId() {
-    return phoneNumberIdentityRegistrationId != null ? OptionalInt.of(phoneNumberIdentityRegistrationId) : OptionalInt.empty();
   }
 
   public void setPhoneNumberIdentityRegistrationId(final int phoneNumberIdentityRegistrationId) {
