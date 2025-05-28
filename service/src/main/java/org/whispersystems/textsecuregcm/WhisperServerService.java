@@ -394,6 +394,12 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     final DynamoDbClient dynamoDbClient = config.getDynamoDbClientConfiguration()
         .buildSyncClient(awsCredentialsProvider, new MicrometerAwsSdkMetricPublisher(awsSdkMetricsExecutor, "dynamoDbSync"));
 
+    final AwsCredentialsProvider cdnCredentialsProvider = config.getCdnConfiguration().credentials().build();
+    final S3AsyncClient asyncCdnS3Client = S3AsyncClient.builder()
+        .credentialsProvider(cdnCredentialsProvider)
+        .region(Region.of(config.getCdnConfiguration().region()))
+        .build();
+
     BlockingQueue<Runnable> messageDeletionQueue = new LinkedBlockingQueue<>();
     Metrics.gaugeCollectionSize(name(getClass(), "messageDeletionQueueSize"), Collections.emptyList(),
         messageDeletionQueue);
@@ -500,8 +506,6 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         .scheduledExecutorService(name(getClass(), "remoteStorageRetry-%d")).threads(1).build();
     ScheduledExecutorService registrationIdentityTokenRefreshExecutor = environment.lifecycle()
         .scheduledExecutorService(name(getClass(), "registrationIdentityTokenRefresh-%d")).threads(1).build();
-    ScheduledExecutorService recurringConfigSyncExecutor = environment.lifecycle()
-        .scheduledExecutorService(name(getClass(), "configSync-%d")).threads(1).build();
 
     Scheduler messageDeliveryScheduler = Schedulers.fromExecutorService(
         ExecutorServiceMetrics.monitor(Metrics.globalRegistry,
@@ -610,7 +614,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     SecureStorageClient secureStorageClient = new SecureStorageClient(storageCredentialsGenerator,
         storageServiceExecutor, storageServiceRetryExecutor, config.getSecureStorageServiceConfiguration());
     DisconnectionRequestManager disconnectionRequestManager = new DisconnectionRequestManager(pubsubClient, disconnectionRequestListenerExecutor);
-    ProfilesManager profilesManager = new ProfilesManager(profiles, cacheCluster);
+    ProfilesManager profilesManager = new ProfilesManager(profiles, cacheCluster, asyncCdnS3Client, config.getCdnConfiguration().bucket());
     MessagesCache messagesCache = new MessagesCache(messagesCluster, messageDeliveryScheduler,
         messageDeletionAsyncExecutor, clock);
     ClientReleaseManager clientReleaseManager = new ClientReleaseManager(clientReleases,
@@ -745,16 +749,10 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     environment.lifecycle().manage(virtualThreadPinEventMonitor);
     environment.lifecycle().manage(accountsManager);
 
-
-    AwsCredentialsProvider cdnCredentialsProvider = config.getCdnConfiguration().credentials().build();
-    S3Client cdnS3Client = S3Client.builder()
+    final S3Client cdnS3Client = S3Client.builder()
         .credentialsProvider(cdnCredentialsProvider)
         .region(Region.of(config.getCdnConfiguration().region()))
         .httpClientBuilder(AwsCrtHttpClient.builder())
-        .build();
-    S3AsyncClient asyncCdnS3Client = S3AsyncClient.builder()
-        .credentialsProvider(cdnCredentialsProvider)
-        .region(Region.of(config.getCdnConfiguration().region()))
         .build();
 
     final GcsAttachmentGenerator gcsAttachmentGenerator = new GcsAttachmentGenerator(
@@ -874,7 +872,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
             .addService(ExternalServiceCredentialsGrpcService.createForAllExternalServices(config, rateLimiters))
             .addService(new KeysGrpcService(accountsManager, keysManager, rateLimiters))
             .addService(new ProfileGrpcService(clock, accountsManager, profilesManager, dynamicConfigurationManager,
-                config.getBadges(), asyncCdnS3Client, profileCdnPolicyGenerator, profileCdnPolicySigner, profileBadgeConverter, rateLimiters, zkProfileOperations, config.getCdnConfiguration().bucket()));
+                config.getBadges(), profileCdnPolicyGenerator, profileCdnPolicySigner, profileBadgeConverter, rateLimiters, zkProfileOperations));
       }
     };
 
@@ -1082,7 +1080,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new ArchiveController(backupAuthManager, backupManager, backupMetrics),
         new CallRoutingControllerV2(rateLimiters, cloudflareTurnCredentialsManager),
         new CallLinkController(rateLimiters, callingGenericZkSecretParams),
-        new CertificateController(new CertificateGenerator(config.getDeliveryCertificate().certificate().value(),
+        new CertificateController(new CertificateGenerator(config.getDeliveryCertificate().certificate(),
             config.getDeliveryCertificate().ecPrivateKey(), config.getDeliveryCertificate().expiresDays()),
             zkAuthOperations, callingGenericZkSecretParams, clock),
         new ChallengeController(rateLimitChallengeManager, challengeConstraintChecker),
@@ -1102,8 +1100,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
             Clock.systemUTC()),
         new PaymentsController(currencyManager, paymentsCredentialsGenerator),
         new ProfileController(clock, rateLimiters, accountsManager, profilesManager, dynamicConfigurationManager,
-            profileBadgeConverter, config.getBadges(), cdnS3Client, profileCdnPolicyGenerator, profileCdnPolicySigner,
-            config.getCdnConfiguration().bucket(), zkSecretParams, zkProfileOperations, batchIdentityCheckExecutor),
+            profileBadgeConverter, config.getBadges(), profileCdnPolicyGenerator, profileCdnPolicySigner,
+            zkSecretParams, zkProfileOperations, batchIdentityCheckExecutor),
         new ProvisioningController(rateLimiters, provisioningManager),
         new RegistrationController(accountsManager, phoneVerificationTokenManager, registrationLockVerificationManager,
             rateLimiters),
