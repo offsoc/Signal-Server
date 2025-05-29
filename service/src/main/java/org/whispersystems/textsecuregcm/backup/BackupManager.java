@@ -10,6 +10,8 @@ import io.dropwizard.util.DataSize;
 import io.grpc.Status;
 import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -21,8 +23,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import org.apache.commons.lang3.StringUtils;
 import org.signal.libsignal.protocol.ecc.Curve;
 import org.signal.libsignal.protocol.ecc.ECPublicKey;
 import org.signal.libsignal.zkgroup.GenericServerSecretParams;
@@ -30,14 +32,20 @@ import org.signal.libsignal.zkgroup.VerificationFailedException;
 import org.signal.libsignal.zkgroup.backups.BackupAuthCredentialPresentation;
 import org.signal.libsignal.zkgroup.backups.BackupCredentialType;
 import org.signal.libsignal.zkgroup.backups.BackupLevel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.attachments.AttachmentGenerator;
 import org.whispersystems.textsecuregcm.attachments.TusAttachmentGenerator;
 import org.whispersystems.textsecuregcm.auth.AuthenticatedBackupUser;
 import org.whispersystems.textsecuregcm.limits.RateLimiters;
 import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
+import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
 import org.whispersystems.textsecuregcm.util.AsyncTimerUtil;
 import org.whispersystems.textsecuregcm.util.ExceptionUtils;
 import org.whispersystems.textsecuregcm.util.Pair;
+import org.whispersystems.textsecuregcm.util.ua.UnrecognizedUserAgentException;
+import org.whispersystems.textsecuregcm.util.ua.UserAgent;
+import org.whispersystems.textsecuregcm.util.ua.UserAgentUtil;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
@@ -57,6 +65,10 @@ public class BackupManager {
   // How many cdn object copy requests can be outstanding at a time per batch copy-to-backup operation
   private static final int COPY_CONCURRENCY = 10;
 
+  // How often we should persist the current usage
+  @VisibleForTesting
+  static int USAGE_CHECKPOINT_COUNT = 10;
+
 
   private static final String ZK_AUTHN_COUNTER_NAME = MetricsUtil.name(BackupManager.class, "authentication");
   private static final String ZK_AUTHZ_FAILURE_COUNTER_NAME = MetricsUtil.name(BackupManager.class,
@@ -70,6 +82,8 @@ public class BackupManager {
 
   private static final String SUCCESS_TAG_NAME = "success";
   private static final String FAILURE_REASON_TAG_NAME = "reason";
+
+  private static final Logger log = LoggerFactory.getLogger(BackupManager.class);
 
   private final BackupsDb backupsDb;
   private final GenericServerSecretParams serverSecretParams;
@@ -214,29 +228,39 @@ public class BackupManager {
     checkBackupLevel(backupUser, BackupLevel.PAID);
     checkBackupCredentialType(backupUser, BackupCredentialType.MEDIA);
 
-    return Mono
-        // Figure out how many objects we're allowed to copy, updating the quota usage for the amount we are allowed
-        .fromFuture(enforceQuota(backupUser, toCopy))
-
-        // Copy the ones we have enough quota to hold
+    return Mono.fromFuture(() -> allowedCopies(backupUser, toCopy))
         .flatMapMany(quotaResult -> Flux.concat(
 
-            // These fit in our remaining quota, so perform the copy. If the copy fails, our estimated quota usage may not
-            // be exact since we already updated our usage. We make a best-effort attempt to undo the usage update if we
-            // know that the copied failed for sure though.
-            Flux.fromIterable(quotaResult.requestsToCopy()).flatMapSequential(
-                copyParams -> copyToBackup(backupUser, copyParams)
-                    .flatMap(copyResult -> switch (copyResult.outcome()) {
-                      case SUCCESS -> Mono.just(copyResult);
-                      case SOURCE_WRONG_LENGTH, SOURCE_NOT_FOUND, OUT_OF_QUOTA -> Mono
-                          .fromFuture(this.backupsDb.trackMedia(backupUser, -1, -copyParams.destinationObjectSize()))
-                          .thenReturn(copyResult);
-                    }),
-                COPY_CONCURRENCY),
+            // Perform copies for requests that fit in our quota, first updating the usage. If the copy fails, our
+            // estimated quota usage may not be exact since we update usage first. We make a best-effort attempt
+            // to undo the usage update if we know that the copied failed for sure.
+            Flux.fromIterable(quotaResult.requestsToCopy())
+
+                // Update the usage in reasonable chunk sizes to bound how out of sync our claimed and actual usage gets
+                .buffer(USAGE_CHECKPOINT_COUNT)
+                .concatMap(copyParameters -> {
+                  final long quotaToConsume = copyParameters.stream()
+                      .mapToLong(CopyParameters::destinationObjectSize)
+                      .sum();
+                  return Mono
+                      .fromFuture(backupsDb.trackMedia(backupUser, copyParameters.size(), quotaToConsume))
+                      .thenMany(Flux.fromIterable(copyParameters));
+                })
+
+                // Actually perform the copies now that we've updated the quota
+                .flatMapSequential(copyParams -> copyToBackup(backupUser, copyParams)
+                        .flatMap(copyResult -> switch (copyResult.outcome()) {
+                          case SUCCESS -> Mono.just(copyResult);
+                          case SOURCE_WRONG_LENGTH, SOURCE_NOT_FOUND, OUT_OF_QUOTA -> Mono
+                              .fromFuture(this.backupsDb.trackMedia(backupUser, -1, -copyParams.destinationObjectSize()))
+                              .thenReturn(copyResult);
+                        }),
+                    COPY_CONCURRENCY, 1),
 
             // There wasn't enough quota remaining to perform these copies
             Flux.fromIterable(quotaResult.requestsToReject())
-                .map(arg -> new CopyResult(CopyResult.Outcome.OUT_OF_QUOTA, arg.destinationMediaId(), null))));
+                .map(arg -> new CopyResult(CopyResult.Outcome.OUT_OF_QUOTA, arg.destinationMediaId(), null))
+        ));
   }
 
   private Mono<CopyResult> copyToBackup(final AuthenticatedBackupUser backupUser, final CopyParameters copyParameters) {
@@ -262,15 +286,14 @@ public class BackupManager {
   private record QuotaResult(List<CopyParameters> requestsToCopy, List<CopyParameters> requestsToReject) {}
 
   /**
-   * Determine which copy requests can be performed with the user's remaining quota and update the used quota. If a copy
-   * request subsequently fails, the caller should attempt to restore the quota for the failed copy.
+   * Determine which copy requests can be performed with the user's remaining quota. This does not update the quota.
    *
-   * @param backupUser The user quota to update
+   * @param backupUser The user quota to check against
    * @param toCopy     The proposed copy requests
-   * @return QuotaResult indicating which requests fit into the remaining quota and which requests should be rejected
-   * with {@link CopyResult.Outcome#OUT_OF_QUOTA}
+   * @return list of QuotaResult indicating which requests fit into the remaining quota and which requests should be
+   * rejected with {@link CopyResult.Outcome#OUT_OF_QUOTA}
    */
-  private CompletableFuture<QuotaResult> enforceQuota(
+  private CompletableFuture<QuotaResult> allowedCopies(
       final AuthenticatedBackupUser backupUser,
       final List<CopyParameters> toCopy) {
     final long totalBytesAdded = toCopy.stream()
@@ -300,28 +323,32 @@ public class BackupManager {
                   .thenApply(ignored -> usage))
               .whenComplete((newUsage, throwable) -> {
                 boolean usageChanged = throwable == null && !newUsage.equals(info.usageInfo());
-                Metrics.counter(USAGE_RECALCULATION_COUNTER_NAME, "usageChanged", String.valueOf(usageChanged))
+                Metrics.counter(USAGE_RECALCULATION_COUNTER_NAME, Tags.of(
+                    UserAgentTagUtil.getPlatformTag(backupUser.userAgent()),
+                    Tag.of("usageChanged", String.valueOf(usageChanged))))
                     .increment();
               })
               .thenApply(newUsage -> MAX_TOTAL_BACKUP_MEDIA_BYTES - newUsage.bytesUsed());
         })
-        .thenCompose(remainingQuota -> {
+        .thenApply(remainingQuota -> {
           // Figure out how many of the requested objects fit in the remaining quota
           final int index = indexWhereTotalExceeds(toCopy, CopyParameters::destinationObjectSize,
               remainingQuota);
-          final QuotaResult result = new QuotaResult(toCopy.subList(0, index),
-              toCopy.subList(index, toCopy.size()));
-          if (index == 0) {
-            // Skip the usage update if we're not able to write anything
-            return CompletableFuture.completedFuture(result);
-          }
-
-          // Update the usage
-          final long quotaToConsume = result.requestsToCopy.stream()
-              .mapToLong(CopyParameters::destinationObjectSize)
-              .sum();
-          return backupsDb.trackMedia(backupUser, index, quotaToConsume).thenApply(ignored -> result);
+          return new QuotaResult(toCopy.subList(0, index), toCopy.subList(index, toCopy.size()));
         });
+  }
+
+  public record RecalculationResult(UsageInfo oldUsage, UsageInfo newUsage) {}
+  public CompletionStage<Optional<RecalculationResult>> recalculateQuota(final StoredBackupAttributes storedBackupAttributes) {
+    if (StringUtils.isBlank(storedBackupAttributes.backupDir()) || StringUtils.isBlank(storedBackupAttributes.mediaDir())) {
+      return CompletableFuture.completedFuture(Optional.empty());
+    }
+    final String cdnPath = cdnMediaDirectory(storedBackupAttributes.backupDir(), storedBackupAttributes.mediaDir());
+    return this.remoteStorageManager.calculateBytesUsed(cdnPath).thenCompose(usage ->
+      backupsDb.setMediaUsage(storedBackupAttributes, usage).thenApply(ignored ->
+          Optional.of(new RecalculationResult(
+              new UsageInfo(storedBackupAttributes.bytesUsed(), storedBackupAttributes.numObjects()),
+              usage))));
   }
 
   /**
@@ -422,45 +449,79 @@ public class BackupManager {
 
     return Flux.usingWhen(
 
-        // Gather usage updates into the UsageBatcher to apply during the cleanup operation
+        // Gather usage updates into the UsageBatcher so we don't have to update our backup record on every delete
         Mono.just(new UsageBatcher()),
 
         // Deletes the objects, returning their former location. Tracks bytes removed so the quota can be updated on
         // completion
         batcher -> Flux.fromIterable(storageDescriptors)
-            .flatMapSequential(sd -> Mono
-                // Delete the object
-                .fromCompletionStage(remoteStorageManager.delete(cdnMediaPath(backupUser, sd.key())))
-                // Track how much the remote storage manager indicated was deleted as part of the operation
-                .doOnNext(deletedBytes -> batcher.update(-deletedBytes))
-                .thenReturn(sd), DELETION_CONCURRENCY),
 
-        // On cleanup, update the quota using whatever updates were accumulated in the batcher
-        batcher ->
-            Mono.fromFuture(backupsDb.trackMedia(backupUser, batcher.countDelta.get(), batcher.usageDelta.get())));
+            // Delete the objects, allowing DELETION_CONCURRENCY operations out at a time
+            .flatMapSequential(
+                sd -> Mono.fromCompletionStage(remoteStorageManager.delete(cdnMediaPath(backupUser, sd.key()))),
+                DELETION_CONCURRENCY)
+            .zipWithIterable(storageDescriptors)
+
+            // Track how much the remote storage manager indicated was deleted as part of the operation
+            .concatMap(deletedBytesAndStorageDescriptor -> {
+              final long deletedBytes = deletedBytesAndStorageDescriptor.getT1();
+              final StorageDescriptor sd = deletedBytesAndStorageDescriptor.getT2();
+
+              // If it has been a while, perform a checkpoint to make sure our usage doesn't drift too much
+              if (batcher.update(-deletedBytes)) {
+                final UsageBatcher.UsageUpdate usageUpdate = batcher.getAndReset();
+                return Mono
+                    .fromFuture(backupsDb.trackMedia(backupUser, usageUpdate.countDelta, usageUpdate.bytesDelta))
+                    .doOnError(throwable ->
+                        log.warn("Failed to update delta {} after successful delete operation", usageUpdate, throwable))
+                    .thenReturn(sd);
+              } else {
+                return Mono.just(sd);
+              }
+            }),
+
+        // On cleanup, update the quota using whatever remaining updates were accumulated in the batcher
+        batcher -> {
+          final UsageBatcher.UsageUpdate update = batcher.getAndReset();
+          return Mono
+              .fromFuture(backupsDb.trackMedia(backupUser, update.countDelta, update.bytesDelta))
+              .doOnError(throwable ->
+                  log.warn("Failed to update delta {} after successful delete operation", update, throwable));
+        });
   }
 
   /**
-   * Track pending media usage updates
+   * Track pending media usage updates. Not thread safe!
    */
   private static class UsageBatcher {
 
-    AtomicLong countDelta = new AtomicLong();
-    AtomicLong usageDelta = new AtomicLong();
+    private long runningCountDelta = 0;
+    private long runningBytesDelta = 0;
+
+    record UsageUpdate(long countDelta, long bytesDelta) {}
 
     /**
-     * Stage a usage update that will be applied later
+     * Stage a usage update. Returns true when it is time to make a checkpoint
      *
      * @param bytesDelta The amount of bytes that should be tracked as used (or if negative, freed). If the delta is
      *                   non-zero, the count will also be updated.
+     * @return true if we should persist the usage
      */
-    void update(long bytesDelta) {
-      if (bytesDelta < 0) {
-        countDelta.decrementAndGet();
-      } else if (bytesDelta > 0) {
-        countDelta.incrementAndGet();
-      }
-      usageDelta.addAndGet(bytesDelta);
+    boolean update(long bytesDelta) {
+      this.runningCountDelta += Long.signum(bytesDelta);
+      this.runningBytesDelta += bytesDelta;
+      return Math.abs(runningCountDelta) >= USAGE_CHECKPOINT_COUNT;
+    }
+
+    /**
+     * Get the current usage delta, and set the delta to 0
+     * @return A {@link UsageUpdate} to apply
+     */
+    UsageUpdate getAndReset() {
+      final UsageUpdate update = new UsageUpdate(runningCountDelta, runningBytesDelta);
+      runningCountDelta = 0;
+      runningBytesDelta = 0;
+      return update;
     }
   }
 
@@ -481,7 +542,8 @@ public class BackupManager {
    */
   public CompletableFuture<AuthenticatedBackupUser> authenticateBackupUser(
       final BackupAuthCredentialPresentation presentation,
-      final byte[] signature) {
+      final byte[] signature,
+      final String userAgentString) {
     final PresentationSignatureVerifier signatureVerifier = verifyPresentation(presentation);
     return backupsDb
         .retrieveAuthenticationData(presentation.getBackupId())
@@ -499,12 +561,20 @@ public class BackupManager {
           final Pair<BackupCredentialType, BackupLevel> credentialTypeAndBackupLevel =
               signatureVerifier.verifySignature(signature, authenticationData.publicKey());
 
+          UserAgent userAgent;
+          try {
+            userAgent = UserAgentUtil.parseUserAgentString(userAgentString);
+          } catch (UnrecognizedUserAgentException e) {
+            userAgent = null;
+          }
+
           return new AuthenticatedBackupUser(
               presentation.getBackupId(),
               credentialTypeAndBackupLevel.first(),
               credentialTypeAndBackupLevel.second(),
               authenticationData.backupDir(),
-              authenticationData.mediaDir());
+              authenticationData.mediaDir(),
+              userAgent);
         })
         .thenApply(result -> {
           Metrics.counter(ZK_AUTHN_COUNTER_NAME, SUCCESS_TAG_NAME, String.valueOf(true)).increment();
@@ -634,8 +704,9 @@ public class BackupManager {
   @VisibleForTesting
   static void checkBackupLevel(final AuthenticatedBackupUser backupUser, final BackupLevel backupLevel) {
     if (backupUser.backupLevel().compareTo(backupLevel) < 0) {
-      Metrics.counter(ZK_AUTHZ_FAILURE_COUNTER_NAME,
-              FAILURE_REASON_TAG_NAME, "level")
+      Metrics.counter(ZK_AUTHZ_FAILURE_COUNTER_NAME, Tags.of(
+              UserAgentTagUtil.getPlatformTag(backupUser.userAgent()),
+              Tag.of(FAILURE_REASON_TAG_NAME, "level")))
           .increment();
 
       throw Status.PERMISSION_DENIED
@@ -678,8 +749,12 @@ public class BackupManager {
     return "%s/%s".formatted(backupUser.backupDir(), MESSAGE_BACKUP_NAME);
   }
 
+  private static String cdnMediaDirectory(final String backupDir, final String mediaDir) {
+    return "%s/%s/".formatted(backupDir, mediaDir);
+  }
+
   private static String cdnMediaDirectory(final AuthenticatedBackupUser backupUser) {
-    return "%s/%s/".formatted(backupUser.backupDir(), backupUser.mediaDir());
+    return cdnMediaDirectory(backupUser.backupDir(), backupUser.mediaDir());
   }
 
   private static String cdnMediaPath(final AuthenticatedBackupUser backupUser, final byte[] mediaId) {
