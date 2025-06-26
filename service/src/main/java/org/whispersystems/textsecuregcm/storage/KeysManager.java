@@ -5,6 +5,7 @@
 
 package org.whispersystems.textsecuregcm.storage;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -12,26 +13,28 @@ import java.util.concurrent.CompletableFuture;
 import org.whispersystems.textsecuregcm.entities.ECPreKey;
 import org.whispersystems.textsecuregcm.entities.ECSignedPreKey;
 import org.whispersystems.textsecuregcm.entities.KEMSignedPreKey;
-import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+import reactor.core.publisher.Flux;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 
 public class KeysManager {
 
   private final SingleUseECPreKeyStore ecPreKeys;
   private final SingleUseKEMPreKeyStore pqPreKeys;
+  private final PagedSingleUseKEMPreKeyStore pagedPqPreKeys;
   private final RepeatedUseECSignedPreKeyStore ecSignedPreKeys;
   private final RepeatedUseKEMSignedPreKeyStore pqLastResortKeys;
 
   public KeysManager(
-      final DynamoDbAsyncClient dynamoDbAsyncClient,
-      final String ecTableName,
-      final String pqTableName,
-      final String ecSignedPreKeysTableName,
-      final String pqLastResortTableName) {
-    this.ecPreKeys = new SingleUseECPreKeyStore(dynamoDbAsyncClient, ecTableName);
-    this.pqPreKeys = new SingleUseKEMPreKeyStore(dynamoDbAsyncClient, pqTableName);
-    this.ecSignedPreKeys = new RepeatedUseECSignedPreKeyStore(dynamoDbAsyncClient, ecSignedPreKeysTableName);
-    this.pqLastResortKeys = new RepeatedUseKEMSignedPreKeyStore(dynamoDbAsyncClient, pqLastResortTableName);
+      final SingleUseECPreKeyStore ecPreKeys,
+      final SingleUseKEMPreKeyStore pqPreKeys,
+      final PagedSingleUseKEMPreKeyStore pagedPqPreKeys,
+      final RepeatedUseECSignedPreKeyStore ecSignedPreKeys,
+      final RepeatedUseKEMSignedPreKeyStore pqLastResortKeys) {
+    this.ecPreKeys = ecPreKeys;
+    this.pqPreKeys = pqPreKeys;
+    this.pagedPqPreKeys = pagedPqPreKeys;
+    this.ecSignedPreKeys = ecSignedPreKeys;
+    this.pqLastResortKeys = pqLastResortKeys;
   }
 
   public TransactWriteItem buildWriteItemForEcSignedPreKey(final UUID identifier,
@@ -130,8 +133,32 @@ public class KeysManager {
 
   public CompletableFuture<Void> deleteSingleUsePreKeys(final UUID accountUuid, final byte deviceId) {
     return CompletableFuture.allOf(
-            ecPreKeys.delete(accountUuid, deviceId),
-            pqPreKeys.delete(accountUuid, deviceId)
+        ecPreKeys.delete(accountUuid, deviceId),
+        pqPreKeys.delete(accountUuid, deviceId)
     );
+  }
+
+  /**
+   * List all the current remotely stored prekey pages across all devices. Pages that are no longer in use can be
+   * removed with {@link #pruneDeadPage}
+   *
+   * @param lookupConcurrency the number of concurrent lookup operations to perform when populating list results
+   * @return All stored prekey pages
+   */
+  public Flux<DeviceKEMPreKeyPages> listStoredKEMPreKeyPages(int lookupConcurrency) {
+    return pagedPqPreKeys.listStoredPages(lookupConcurrency);
+  }
+
+  /**
+   * Remove a prekey page that is no longer in use. A page should only be removed if it is not the active page and
+   * it has no chance of being updated to be.
+   *
+   * @param identifier The owner of the dead page
+   * @param deviceId The device of the dead page
+   * @param pageId The dead page to remove from storage
+   * @return A future that completes when the page has been removed
+   */
+  public CompletableFuture<Void> pruneDeadPage(final UUID identifier, final byte deviceId, final UUID pageId) {
+    return pagedPqPreKeys.deleteBundleFromS3(identifier, deviceId, pageId);
   }
 }

@@ -225,6 +225,7 @@ import org.whispersystems.textsecuregcm.storage.MessagesCache;
 import org.whispersystems.textsecuregcm.storage.MessagesDynamoDb;
 import org.whispersystems.textsecuregcm.storage.MessagesManager;
 import org.whispersystems.textsecuregcm.storage.OneTimeDonationsManager;
+import org.whispersystems.textsecuregcm.storage.PagedSingleUseKEMPreKeyStore;
 import org.whispersystems.textsecuregcm.storage.PersistentTimer;
 import org.whispersystems.textsecuregcm.storage.PhoneNumberIdentifiers;
 import org.whispersystems.textsecuregcm.storage.Profiles;
@@ -235,8 +236,12 @@ import org.whispersystems.textsecuregcm.storage.RegistrationRecoveryPasswords;
 import org.whispersystems.textsecuregcm.storage.RegistrationRecoveryPasswordsManager;
 import org.whispersystems.textsecuregcm.storage.RemoteConfigs;
 import org.whispersystems.textsecuregcm.storage.RemoteConfigsManager;
+import org.whispersystems.textsecuregcm.storage.RepeatedUseECSignedPreKeyStore;
+import org.whispersystems.textsecuregcm.storage.RepeatedUseKEMSignedPreKeyStore;
 import org.whispersystems.textsecuregcm.storage.ReportMessageDynamoDb;
 import org.whispersystems.textsecuregcm.storage.ReportMessageManager;
+import org.whispersystems.textsecuregcm.storage.SingleUseECPreKeyStore;
+import org.whispersystems.textsecuregcm.storage.SingleUseKEMPreKeyStore;
 import org.whispersystems.textsecuregcm.storage.SubscriptionManager;
 import org.whispersystems.textsecuregcm.storage.Subscriptions;
 import org.whispersystems.textsecuregcm.storage.VerificationSessionManager;
@@ -425,13 +430,21 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         config.getDynamoDbTables().getPhoneNumberIdentifiers().getTableName());
     Profiles profiles = new Profiles(dynamoDbClient, dynamoDbAsyncClient,
         config.getDynamoDbTables().getProfiles().getTableName());
+
+    S3AsyncClient asyncKeysS3Client = S3AsyncClient.builder()
+        .credentialsProvider(awsCredentialsProvider)
+        .region(Region.of(config.getPagedSingleUseKEMPreKeyStore().region()))
+        .build();
     KeysManager keysManager = new KeysManager(
-        dynamoDbAsyncClient,
-        config.getDynamoDbTables().getEcKeys().getTableName(),
-        config.getDynamoDbTables().getKemKeys().getTableName(),
-        config.getDynamoDbTables().getEcSignedPreKeys().getTableName(),
-        config.getDynamoDbTables().getKemLastResortKeys().getTableName()
-    );
+        new SingleUseECPreKeyStore(dynamoDbAsyncClient, config.getDynamoDbTables().getEcKeys().getTableName()),
+        new SingleUseKEMPreKeyStore(dynamoDbAsyncClient, config.getDynamoDbTables().getKemKeys().getTableName()),
+        new PagedSingleUseKEMPreKeyStore(
+            dynamoDbAsyncClient,
+            asyncKeysS3Client,
+            config.getDynamoDbTables().getPagedKemKeys().getTableName(),
+            config.getPagedSingleUseKEMPreKeyStore().bucket()),
+        new RepeatedUseECSignedPreKeyStore(dynamoDbAsyncClient, config.getDynamoDbTables().getEcSignedPreKeys().getTableName()),
+        new RepeatedUseKEMSignedPreKeyStore(dynamoDbAsyncClient, config.getDynamoDbTables().getKemLastResortKeys().getTableName()));
     MessagesDynamoDb messagesDynamoDb = new MessagesDynamoDb(dynamoDbClient, dynamoDbAsyncClient,
         config.getDynamoDbTables().getMessages().getTableName(),
         config.getDynamoDbTables().getMessages().getExpiration(),
@@ -554,8 +567,6 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         .maxThreads(2)
         .minThreads(2)
         .build();
-    ExecutorService keyTransparencyCallbackExecutor = environment.lifecycle()
-        .virtualExecutorService(name(getClass(), "keyTransparency-%d"));
     ExecutorService googlePlayBillingExecutor = environment.lifecycle()
         .virtualExecutorService(name(getClass(), "googlePlayBilling-%d"));
     ExecutorService appleAppStoreExecutor = environment.lifecycle()
@@ -606,8 +617,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         config.getKeyTransparencyServiceConfiguration().port(),
         config.getKeyTransparencyServiceConfiguration().tlsCertificate(),
         config.getKeyTransparencyServiceConfiguration().clientCertificate(),
-        config.getKeyTransparencyServiceConfiguration().clientPrivateKey().value(),
-        keyTransparencyCallbackExecutor);
+        config.getKeyTransparencyServiceConfiguration().clientPrivateKey().value());
     SecureValueRecovery2Client secureValueRecovery2Client = new SecureValueRecovery2Client(svr2CredentialsGenerator,
         secureValueRecovery2ServiceExecutor, secureValueRecoveryServiceRetryExecutor, config.getSvr2Configuration());
     SecureStorageClient secureStorageClient = new SecureStorageClient(storageCredentialsGenerator,
