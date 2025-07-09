@@ -8,6 +8,7 @@ package org.whispersystems.textsecuregcm.redis;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.lettuce.core.FlushMode;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisException;
 import io.lettuce.core.RedisURI;
@@ -21,7 +22,6 @@ import java.net.ServerSocket;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
-import org.junit.jupiter.api.extension.AfterAllCallback;
 import org.junit.jupiter.api.extension.AfterEachCallback;
 import org.junit.jupiter.api.extension.BeforeAllCallback;
 import org.junit.jupiter.api.extension.BeforeEachCallback;
@@ -32,18 +32,18 @@ import org.whispersystems.textsecuregcm.util.RedisClusterUtil;
 import redis.embedded.RedisServer;
 import redis.embedded.exceptions.EmbeddedRedisException;
 
-public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallback, AfterAllCallback,
-    AfterEachCallback {
+public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallback, AfterEachCallback,
+    ExtensionContext.Store.CloseableResource {
 
   private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(2);
   private static final int NODE_COUNT = 2;
 
   private static final RedisServer[] CLUSTER_NODES = new RedisServer[NODE_COUNT];
+  private static ClientResources redisClientResources;
 
   private final Duration timeout;
   private final RetryConfiguration retryConfiguration;
   private FaultTolerantRedisClusterClient redisCluster;
-  private ClientResources redisClientResources;
 
   public RedisClusterExtension(final Duration timeout, final RetryConfiguration retryConfiguration) {
     this.timeout = timeout;
@@ -56,35 +56,42 @@ public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallb
   }
 
   @Override
-  public void afterAll(final ExtensionContext context) throws Exception {
-    for (final RedisServer node : CLUSTER_NODES) {
-      node.stop();
+  public void close() throws Throwable {
+    if (redisClientResources != null) {
+      redisClientResources.shutdown().get();
+
+      for (final RedisServer node : CLUSTER_NODES) {
+        node.stop();
+      }
     }
+
+    redisClientResources = null;
   }
 
   @Override
   public void afterEach(final ExtensionContext context) throws Exception {
     redisCluster.shutdown();
-    redisClientResources.shutdown().get();
   }
 
   @Override
   public void beforeAll(final ExtensionContext context) throws Exception {
     assumeFalse(System.getProperty("os.name").equalsIgnoreCase("windows"));
 
-    for (int i = 0; i < NODE_COUNT; i++) {
-      // We're occasionally seeing redis server startup failing due to the bind address being already in use.
-      // To mitigate that, we're going to just retry a couple of times before failing the test.
-      CLUSTER_NODES[i] = startWithRetries(3);
-    }
+    if (redisClientResources == null) {
+      redisClientResources = ClientResources.builder().build();
 
-    assembleCluster(CLUSTER_NODES);
+      for (int i = 0; i < NODE_COUNT; i++) {
+        // We're occasionally seeing redis server startup failing due to the bind address being already in use.
+        // To mitigate that, we're going to just retry a couple of times before failing the test.
+        CLUSTER_NODES[i] = startWithRetries(3);
+      }
+
+      assembleCluster(CLUSTER_NODES);
+    }
   }
 
   @Override
   public void beforeEach(final ExtensionContext context) throws Exception {
-
-    redisClientResources = ClientResources.builder().build();
     final CircuitBreakerConfiguration circuitBreakerConfig = new CircuitBreakerConfiguration();
     circuitBreakerConfig.setWaitDurationInOpenState(Duration.ofMillis(500));
     redisCluster = new FaultTolerantRedisClusterClient("test-cluster",
@@ -120,7 +127,7 @@ public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallb
       }
     });
 
-    redisCluster.useCluster(connection -> connection.sync().flushall());
+    redisCluster.useCluster(connection -> connection.sync().flushall(FlushMode.SYNC));
   }
 
   public static List<RedisURI> getRedisURIs() {
