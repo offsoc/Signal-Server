@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -42,7 +43,7 @@ import org.whispersystems.textsecuregcm.experiment.ExperimentEnrollmentManager;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClient;
 import org.whispersystems.textsecuregcm.redis.RedisClusterExtension;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
-import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery2Client;
+import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecoveryClient;
 import org.whispersystems.textsecuregcm.storage.DynamoDbExtensionSchema.Tables;
 import org.whispersystems.textsecuregcm.tests.util.AccountsHelper;
 import org.whispersystems.textsecuregcm.util.AttributeValues;
@@ -145,7 +146,7 @@ class AccountsManagerUsernameIntegrationTest {
     final MessagesManager messageManager = mock(MessagesManager.class);
     final ProfilesManager profileManager = mock(ProfilesManager.class);
     when(messageManager.clear(any())).thenReturn(CompletableFuture.completedFuture(null));
-    when(profileManager.deleteAll(any())).thenReturn(CompletableFuture.completedFuture(null));
+    when(profileManager.deleteAll(any(), anyBoolean())).thenReturn(CompletableFuture.completedFuture(null));
 
     final DisconnectionRequestManager disconnectionRequestManager = mock(DisconnectionRequestManager.class);
     when(disconnectionRequestManager.requestDisconnection(any())).thenReturn(CompletableFuture.completedFuture(null));
@@ -160,7 +161,8 @@ class AccountsManagerUsernameIntegrationTest {
         messageManager,
         profileManager,
         mock(SecureStorageClient.class),
-        mock(SecureValueRecovery2Client.class),
+        mock(SecureValueRecoveryClient.class),
+        mock(SecureValueRecoveryClient.class),
         disconnectionRequestManager,
         mock(RegistrationRecoveryPasswordsManager.class),
         mock(ClientPublicKeysManager.class),

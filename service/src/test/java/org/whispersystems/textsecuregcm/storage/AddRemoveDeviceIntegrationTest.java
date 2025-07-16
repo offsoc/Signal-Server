@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyByte;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
@@ -41,7 +42,7 @@ import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.redis.RedisClusterExtension;
 import org.whispersystems.textsecuregcm.redis.RedisServerExtension;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
-import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecovery2Client;
+import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecoveryClient;
 import org.whispersystems.textsecuregcm.tests.util.AccountsHelper;
 import org.whispersystems.textsecuregcm.tests.util.KeysHelper;
 import org.whispersystems.textsecuregcm.util.Pair;
@@ -134,8 +135,8 @@ public class AddRemoveDeviceIntegrationTest {
     final SecureStorageClient secureStorageClient = mock(SecureStorageClient.class);
     when(secureStorageClient.deleteStoredData(any())).thenReturn(CompletableFuture.completedFuture(null));
 
-    final SecureValueRecovery2Client svr2Client = mock(SecureValueRecovery2Client.class);
-    when(svr2Client.deleteBackups(any())).thenReturn(CompletableFuture.completedFuture(null));
+    final SecureValueRecoveryClient svr2Client = mock(SecureValueRecoveryClient.class);
+    when(svr2Client.removeData(any())).thenReturn(CompletableFuture.completedFuture(null));
 
     final PhoneNumberIdentifiers phoneNumberIdentifiers =
         new PhoneNumberIdentifiers(DYNAMO_DB_EXTENSION.getDynamoDbAsyncClient(),
@@ -145,7 +146,7 @@ public class AddRemoveDeviceIntegrationTest {
     when(messagesManager.clear(any(), anyByte())).thenReturn(CompletableFuture.completedFuture(null));
 
     final ProfilesManager profilesManager = mock(ProfilesManager.class);
-    when(profilesManager.deleteAll(any())).thenReturn(CompletableFuture.completedFuture(null));
+    when(profilesManager.deleteAll(any(), anyBoolean())).thenReturn(CompletableFuture.completedFuture(null));
 
     final RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager =
         mock(RegistrationRecoveryPasswordsManager.class);
@@ -168,6 +169,7 @@ public class AddRemoveDeviceIntegrationTest {
         messagesManager,
         profilesManager,
         secureStorageClient,
+        svr2Client,
         svr2Client,
         mock(DisconnectionRequestManager.class),
         mock(RegistrationRecoveryPasswordsManager.class),
