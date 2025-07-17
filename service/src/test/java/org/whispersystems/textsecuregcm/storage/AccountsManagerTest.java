@@ -16,8 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyByte;
-import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.notNull;
@@ -59,7 +59,6 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.annotation.Nullable;
 import javax.crypto.spec.SecretKeySpec;
@@ -218,9 +217,9 @@ class AccountsManagerTest {
     doAnswer(invocation -> {
       final Callable<?> task = invocation.getArgument(1);
       return task.call();
-    }).when(accountLockManager).withLock(anyList(), any(), any());
+    }).when(accountLockManager).withLock(anySet(), any(), any());
 
-    when(accountLockManager.withLockAsync(anyList(), any(), any())).thenAnswer(invocation -> {
+    when(accountLockManager.withLockAsync(anySet(), any(), any())).thenAnswer(invocation -> {
       final Supplier<CompletableFuture<?>> taskSupplier = invocation.getArgument(1);
       return taskSupplier.get();
     });
@@ -1019,10 +1018,15 @@ class AccountsManagerTest {
     );
   }
 
-  @Test
-  void testChangePhoneNumber() throws InterruptedException, MismatchedDevicesException {
-    final String originalNumber = "+14152222222";
-    final String targetNumber = "+14153333333";
+  @ParameterizedTest
+  @CsvSource({
+      "+14152222222,+14153333333",
+
+      // Historically, "change number" behavior was different for "change to existing number," though that's no longer
+      // the case
+      "+14152222222,+14152222222"
+  })
+  void testChangePhoneNumber(final String originalNumber, final String targetNumber) throws InterruptedException, MismatchedDevicesException {
     final UUID uuid = UUID.randomUUID();
     final UUID originalPni = UUID.randomUUID();
     final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
@@ -1049,32 +1053,16 @@ class AccountsManagerTest {
   }
 
   @Test
-  void testChangePhoneNumberSameNumber() throws InterruptedException, MismatchedDevicesException {
-    final String number = "+14152222222";
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
-
-    Account account = AccountsHelper.generateTestAccount(number, UUID.randomUUID(), UUID.randomUUID(), List.of(DevicesHelper.createDevice(Device.PRIMARY_ID)), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
-    phoneNumberIdentifiersByE164.put(number, account.getPhoneNumberIdentifier());
-    account = accountsManager.changeNumber(account,
-        number,
-        new IdentityKey(pniIdentityKeyPair.getPublicKey()),
-        Map.of(Device.PRIMARY_ID, KeysHelper.signedECPreKey(1, pniIdentityKeyPair)),
-        Map.of(Device.PRIMARY_ID, KeysHelper.signedKEMPreKey(2, pniIdentityKeyPair)),
-        Map.of(Device.PRIMARY_ID, 1));
-
-    assertEquals(number, account.getNumber());
-    verifyNoInteractions(keysManager);
-  }
-
-  @Test
   void testChangePhoneNumberDifferentNumberSamePni() throws InterruptedException, MismatchedDevicesException {
     final String originalNumber = "+22923456789";
     // the canonical form of numbers may change over time, so we use PNIs as stable identifiers
     final String newNumber = "+2290123456789";
     final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final UUID phoneNumberIdentifier = UUID.randomUUID();
 
-    Account account = AccountsHelper.generateTestAccount(originalNumber, UUID.randomUUID(), UUID.randomUUID(),
-        new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+    Account account = AccountsHelper.generateTestAccount(originalNumber, UUID.randomUUID(), phoneNumberIdentifier,
+        List.of(DevicesHelper.createDevice(Device.PRIMARY_ID)), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+
     phoneNumberIdentifiersByE164.put(originalNumber, account.getPhoneNumberIdentifier());
     phoneNumberIdentifiersByE164.put(newNumber, account.getPhoneNumberIdentifier());
     account = accountsManager.changeNumber(account,
@@ -1084,8 +1072,9 @@ class AccountsManagerTest {
         Map.of(Device.PRIMARY_ID, KeysHelper.signedKEMPreKey(2, pniIdentityKeyPair)),
         Map.of(Device.PRIMARY_ID, 1));
 
-    assertEquals(originalNumber, account.getNumber());
-    verifyNoInteractions(keysManager);
+    assertEquals(newNumber, account.getNumber());
+    assertEquals(phoneNumberIdentifier, account.getIdentifier(IdentityType.PNI));
+    verify(accounts, never()).delete(any(), any());
   }
 
   @Test
@@ -1208,101 +1197,6 @@ class AccountsManagerTest {
     final Account account = AccountsHelper.generateTestAccount(originalNumber, uuid, UUID.randomUUID(), new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
 
     assertThrows(AssertionError.class, () -> accountsManager.update(account, a -> a.setNumber(targetNumber, UUID.randomUUID())));
-  }
-
-  @Test
-  void testPniUpdate() throws MismatchedDevicesException {
-    final String number = "+14152222222";
-    final byte deviceId2 = 2;
-
-    List<Device> devices = List.of(DevicesHelper.createDevice(Device.PRIMARY_ID, 0L, 101),
-        DevicesHelper.createDevice(deviceId2, 0L, 102));
-
-    Account account = AccountsHelper.generateTestAccount(number, UUID.randomUUID(), UUID.randomUUID(), devices, new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
-    final ECKeyPair identityKeyPair = Curve.generateKeyPair();
-    Map<Byte, ECSignedPreKey> newSignedKeys = Map.of(
-        Device.PRIMARY_ID, KeysHelper.signedECPreKey(1, identityKeyPair),
-        deviceId2, KeysHelper.signedECPreKey(2, identityKeyPair));
-    Map<Byte, KEMSignedPreKey> newSignedKemKeys = Map.of(
-        Device.PRIMARY_ID, KeysHelper.signedKEMPreKey(1, identityKeyPair),
-        deviceId2, KeysHelper.signedKEMPreKey(2, identityKeyPair));
-    Map<Byte, Integer> newRegistrationIds = Map.of(Device.PRIMARY_ID, 201, deviceId2, 202);
-
-    UUID oldUuid = account.getUuid();
-    UUID oldPni = account.getPhoneNumberIdentifier();
-
-    final IdentityKey pniIdentityKey = new IdentityKey(Curve.generateKeyPair().getPublicKey());
-
-    when(keysManager.storeEcSignedPreKeys(any(), anyByte(), any())).thenReturn(CompletableFuture.completedFuture(null));
-
-    final Account updatedAccount = accountsManager.updatePniKeys(account, pniIdentityKey, newSignedKeys, newSignedKemKeys, newRegistrationIds);
-
-    // non-PNI stuff should not change
-    assertEquals(oldUuid, updatedAccount.getUuid());
-    assertEquals(number, updatedAccount.getNumber());
-    assertEquals(oldPni, updatedAccount.getPhoneNumberIdentifier());
-    assertNull(updatedAccount.getIdentityKey(IdentityType.ACI));
-    assertEquals(Map.of(Device.PRIMARY_ID, 101, deviceId2, 102),
-        updatedAccount.getDevices().stream().collect(Collectors.toMap(Device::getId, device -> device.getRegistrationId(IdentityType.ACI))));
-
-    // PNI stuff should
-    assertEquals(pniIdentityKey, updatedAccount.getIdentityKey(IdentityType.PNI));
-    assertEquals(newRegistrationIds,
-        updatedAccount.getDevices().stream().collect(Collectors.toMap(Device::getId, device -> device.getRegistrationId(IdentityType.PNI))));
-
-    verify(accounts).updateTransactionallyAsync(any(), any());
-
-    verify(keysManager).deleteSingleUsePreKeys(oldPni);
-    verify(keysManager).buildWriteItemForEcSignedPreKey(eq(oldPni), eq(Device.PRIMARY_ID), any());
-    verify(keysManager).buildWriteItemForEcSignedPreKey(eq(oldPni), eq(deviceId2), any());
-    verify(keysManager).buildWriteItemForLastResortKey(eq(oldPni), eq(deviceId2), any());
-  }
-
-  @Test
-  void testPniUpdate_incompleteKeys() {
-    final String number = "+14152222222";
-    final byte deviceId2 = 2;
-    final byte deviceId3 = 3;
-    List<Device> devices = List.of(DevicesHelper.createDevice(Device.PRIMARY_ID, 0L, 101),
-        DevicesHelper.createDevice(deviceId2, 0L, 102));
-    Account account = AccountsHelper.generateTestAccount(number, UUID.randomUUID(), UUID.randomUUID(), devices, new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
-    final ECKeyPair identityKeyPair = Curve.generateKeyPair();
-    final Map<Byte, ECSignedPreKey> newSignedKeys = Map.of(
-        deviceId2, KeysHelper.signedECPreKey(1, identityKeyPair),
-        deviceId3, KeysHelper.signedECPreKey(2, identityKeyPair));
-    Map<Byte, Integer> newRegistrationIds = Map.of(Device.PRIMARY_ID, 201, deviceId2, 202);
-
-    final IdentityKey pniIdentityKey = new IdentityKey(Curve.generateKeyPair().getPublicKey());
-
-    assertThrows(MismatchedDevicesException.class,
-        () -> accountsManager.updatePniKeys(account, pniIdentityKey, newSignedKeys, null, newRegistrationIds));
-
-    verifyNoInteractions(accounts);
-    verifyNoInteractions(keysManager);
-  }
-
-  @Test
-  void testPniPqUpdate_incompleteKeys() {
-    final String number = "+14152222222";
-    final byte deviceId2 = 2;
-    List<Device> devices = List.of(DevicesHelper.createDevice(Device.PRIMARY_ID, 0L, 101),
-        DevicesHelper.createDevice(deviceId2, 0L, 102));
-    Account account = AccountsHelper.generateTestAccount(number, UUID.randomUUID(), UUID.randomUUID(), devices, new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
-    final ECKeyPair identityKeyPair = Curve.generateKeyPair();
-    final Map<Byte, ECSignedPreKey> newSignedKeys = Map.of(
-        Device.PRIMARY_ID, KeysHelper.signedECPreKey(1, identityKeyPair),
-        deviceId2, KeysHelper.signedECPreKey(2, identityKeyPair));
-    final Map<Byte, KEMSignedPreKey> newSignedPqKeys = Map.of(
-        Device.PRIMARY_ID, KeysHelper.signedKEMPreKey(3, identityKeyPair));
-    Map<Byte, Integer> newRegistrationIds = Map.of(Device.PRIMARY_ID, 201, deviceId2, 202);
-
-    final IdentityKey pniIdentityKey = new IdentityKey(Curve.generateKeyPair().getPublicKey());
-
-    assertThrows(MismatchedDevicesException.class,
-        () -> accountsManager.updatePniKeys(account, pniIdentityKey, newSignedKeys, newSignedPqKeys, newRegistrationIds));
-
-    verifyNoInteractions(accounts);
-    verifyNoInteractions(keysManager);
   }
 
   @Test

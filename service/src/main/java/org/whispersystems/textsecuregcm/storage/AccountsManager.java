@@ -52,7 +52,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -277,7 +276,7 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
 
     return createTimer.record(() -> {
       try {
-        return accountLockManager.withLock(List.of(pni),
+        return accountLockManager.withLock(Set.of(pni),
             () -> create(number, pni, accountAttributes, accountBadges, aciIdentityKey, pniIdentityKey, primaryDeviceSpec, userAgent), accountLockExecutor);
       } catch (final Exception e) {
         if (e instanceof RuntimeException runtimeException) {
@@ -416,7 +415,7 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   }
 
   public CompletableFuture<Pair<Account, Device>> addDevice(final Account account, final DeviceSpec deviceSpec, final String linkDeviceToken) {
-    return accountLockManager.withLockAsync(List.of(account.getPhoneNumberIdentifier()),
+    return accountLockManager.withLockAsync(Set.of(account.getPhoneNumberIdentifier()),
         () -> addDevice(account.getIdentifier(IdentityType.ACI), deviceSpec, linkDeviceToken, MAX_UPDATE_ATTEMPTS),
         accountLockExecutor);
   }
@@ -610,7 +609,7 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
       throw new IllegalArgumentException("Cannot remove primary device");
     }
 
-    return accountLockManager.withLockAsync(List.of(account.getPhoneNumberIdentifier()),
+    return accountLockManager.withLockAsync(Set.of(account.getPhoneNumberIdentifier()),
         () -> removeDevice(account.getIdentifier(IdentityType.ACI), deviceId, MAX_UPDATE_ATTEMPTS),
         accountLockExecutor);
   }
@@ -663,15 +662,10 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
       final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys,
       final Map<Byte, Integer> pniRegistrationIds) throws InterruptedException, MismatchedDevicesException {
 
-    final UUID originalPhoneNumberIdentifier = account.getPhoneNumberIdentifier();
     final UUID targetPhoneNumberIdentifier = phoneNumberIdentifiers.getPhoneNumberIdentifier(targetNumber).join();
 
-    if (originalPhoneNumberIdentifier.equals(targetPhoneNumberIdentifier)) {
-      return account;
-    }
-
     try {
-      return accountLockManager.withLock(List.of(account.getPhoneNumberIdentifier(), targetPhoneNumberIdentifier),
+      return accountLockManager.withLock(new HashSet<>(List.of(account.getPhoneNumberIdentifier(), targetPhoneNumberIdentifier)),
           () -> changeNumber(account, targetNumber, targetPhoneNumberIdentifier, pniIdentityKey, pniSignedPreKeys, pniPqLastResortPreKeys, pniRegistrationIds), accountLockExecutor);
     } catch (final Exception e) {
       if (e instanceof MismatchedDevicesException mismatchedDevicesException) {
@@ -699,24 +693,30 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
 
     redisDelete(account);
 
-    // There are three possible states for accounts associated with the target phone number:
+    // There are four possible states for accounts associated with the target phone number:
     //
-    // 1. An account exists with the target PNI; the caller has proved ownership of the number, so delete the
+    // 1. The authenticated account already has the given phone number. We don't want to delete the account, but do want
+    //    to update keys.
+    // 2. An account exists with the target PNI; the caller has proved ownership of the number, so delete the
     //    account with the target PNI. This will leave a "deleted account" record for the deleted account mapping
     //    the UUID of the deleted account to the target PNI. We'll then overwrite that so it points to the
     //    original PNI to facilitate switching back and forth between numbers.
-    // 2. No account with the target PNI exists, but one has recently been deleted. In that case, add a "deleted
+    // 3. No account with the target PNI exists, but one has recently been deleted. In that case, add a "deleted
     //    account" record that maps the ACI of the recently-deleted account to the now-abandoned original PNI
     //    of the account changing its number (which facilitates ACI consistency in cases that a party is switching
     //    back and forth between numbers).
-    // 3. No account with the target PNI exists at all, in which case no additional action is needed.
+    // 4. No account with the target PNI exists at all, in which case no additional action is needed.
     final Optional<UUID> recentlyDeletedAci = accounts.findRecentlyDeletedAccountIdentifier(targetPhoneNumberIdentifier);
     final Optional<Account> maybeExistingAccount = getByE164(targetNumber);
     final Optional<UUID> maybeDisplacedUuid;
 
     if (maybeExistingAccount.isPresent()) {
-      delete(maybeExistingAccount.get()).join();
-      maybeDisplacedUuid = maybeExistingAccount.map(Account::getUuid);
+      if (maybeExistingAccount.get().getIdentifier(IdentityType.ACI).equals(account.getIdentifier(IdentityType.ACI))) {
+        maybeDisplacedUuid = Optional.empty();
+      } else {
+        delete(maybeExistingAccount.get()).join();
+        maybeDisplacedUuid = maybeExistingAccount.map(Account::getUuid);
+      }
     } else {
       maybeDisplacedUuid = recentlyDeletedAci;
     }
@@ -740,45 +740,6 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
         a -> accounts.changeNumber(a, targetNumber, targetPhoneNumberIdentifier, maybeDisplacedUuid, keyWriteItems),
         () -> accounts.getByAccountIdentifier(uuid).orElseThrow(),
         AccountChangeValidator.NUMBER_CHANGE_VALIDATOR);
-  }
-
-  public Account updatePniKeys(final Account account,
-      final IdentityKey pniIdentityKey,
-      final Map<Byte, ECSignedPreKey> pniSignedPreKeys,
-      final Map<Byte, KEMSignedPreKey> pniPqLastResortPreKeys,
-      final Map<Byte, Integer> pniRegistrationIds) throws MismatchedDevicesException {
-
-    try {
-      return accountLockManager.withLock(List.of(account.getIdentifier(IdentityType.PNI)), () -> {
-        validateDevices(account, pniSignedPreKeys, pniPqLastResortPreKeys, pniRegistrationIds);
-
-        final UUID aci = account.getIdentifier(IdentityType.ACI);
-        final UUID pni = account.getIdentifier(IdentityType.PNI);
-
-        final Collection<TransactWriteItem> keyWriteItems =
-            buildPniKeyWriteItems(pni, pniSignedPreKeys, pniPqLastResortPreKeys);
-
-        return redisDeleteAsync(account)
-            .thenCompose(ignored -> keysManager.deleteSingleUsePreKeys(pni))
-            .thenCompose(ignored -> updateTransactionallyWithRetriesAsync(account,
-                a -> setPniKeys(a, pniIdentityKey, pniRegistrationIds),
-                accounts::updateTransactionallyAsync,
-                () -> accounts.getByAccountIdentifierAsync(aci).thenApply(Optional::orElseThrow),
-                a -> keyWriteItems,
-                AccountChangeValidator.GENERAL_CHANGE_VALIDATOR,
-                MAX_UPDATE_ATTEMPTS))
-            .join();
-      }, accountLockExecutor);
-    } catch (final Exception e) {
-      if (e instanceof MismatchedDevicesException mismatchedDevicesException) {
-        throw mismatchedDevicesException;
-      } else if (e instanceof RuntimeException runtimeException) {
-        throw runtimeException;
-      }
-
-      logger.error("Unexpected exception when updating PNI key material", e);
-      throw new RuntimeException(e);
-    }
   }
 
   private Collection<TransactWriteItem> buildPniKeyWriteItems(
@@ -1119,42 +1080,6 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     return CompletableFuture.failedFuture(new OptimisticLockRetryLimitExceededException());
   }
 
-  private CompletionStage<Account> updateTransactionallyWithRetriesAsync(final Account account,
-      final Consumer<Account> updater,
-      final BiFunction<Account, Collection<TransactWriteItem>, CompletionStage<Void>> persister,
-      final Supplier<CompletionStage<Account>> retriever,
-      final Function<Account, Collection<TransactWriteItem>> additionalWriteItemProvider,
-      final AccountChangeValidator changeValidator,
-      final int remainingTries) {
-
-    final Account originalAccount = AccountUtil.cloneAccountAsNotStale(account);
-
-    final Collection<TransactWriteItem> additionalWriteItems = additionalWriteItemProvider.apply(account);
-    updater.accept(account);
-
-    if (remainingTries > 0) {
-      return persister.apply(account, additionalWriteItems)
-          .thenApply(ignored -> {
-            final Account updatedAccount = AccountUtil.cloneAccountAsNotStale(account);
-            account.markStale();
-
-            changeValidator.validateChange(originalAccount, updatedAccount);
-
-            return updatedAccount;
-          })
-          .exceptionallyCompose(throwable -> {
-            if (ExceptionUtils.unwrap(throwable) instanceof ContestedOptimisticLockException) {
-              return retriever.get().thenCompose(refreshedAccount ->
-                  updateTransactionallyWithRetriesAsync(refreshedAccount, updater, persister, retriever, additionalWriteItemProvider, changeValidator, remainingTries - 1));
-            } else {
-              throw ExceptionUtils.wrap(throwable);
-            }
-          });
-    }
-
-    return CompletableFuture.failedFuture(new OptimisticLockRetryLimitExceededException());
-  }
-
   public Account updateDevice(Account account, byte deviceId, Consumer<Device> deviceUpdater) {
     return update(account, a -> {
       a.getDevice(deviceId).ifPresent(deviceUpdater);
@@ -1263,7 +1188,7 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   public CompletableFuture<Void> delete(final Account account, final DeletionReason deletionReason) {
     final Timer.Sample sample = Timer.start();
 
-    return accountLockManager.withLockAsync(List.of(account.getPhoneNumberIdentifier()), () -> delete(account),
+    return accountLockManager.withLockAsync(Set.of(account.getPhoneNumberIdentifier()), () -> delete(account),
             accountLockExecutor)
         .whenComplete((ignored, throwable) -> {
           sample.stop(deleteTimer);
