@@ -479,8 +479,8 @@
     </dependency>
 
     <dependency>
-      <groupId>org.signal</groupId>
-      <artifactId>embedded-redis</artifactId>
+      <groupId>com.redis</groupId>
+      <artifactId>testcontainers-redis</artifactId>
       <scope>test</scope>
     </dependency>
 
