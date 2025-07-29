@@ -57,7 +57,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.junitpioneer.jupiter.cartesian.CartesianTest;
 import org.mockito.ArgumentCaptor;
 import org.signal.libsignal.protocol.IdentityKey;
-import org.signal.libsignal.protocol.ecc.Curve;
 import org.signal.libsignal.protocol.ecc.ECKeyPair;
 import org.whispersystems.textsecuregcm.auth.AuthenticatedDevice;
 import org.whispersystems.textsecuregcm.entities.AccountAttributes;
@@ -191,12 +190,16 @@ class DeviceControllerTest {
     final byte[] deviceName = "refreshed-device-name".getBytes(StandardCharsets.UTF_8);
     final long deviceCreated = System.currentTimeMillis();
     final long deviceLastSeen = deviceCreated + 1;
+    final int registrationId = 2;
+    final byte[] createdAtCiphertext = "timestamp ciphertext".getBytes(StandardCharsets.UTF_8);
 
     final Device refreshedDevice = mock(Device.class);
     when(refreshedDevice.getId()).thenReturn(deviceId);
     when(refreshedDevice.getName()).thenReturn(deviceName);
     when(refreshedDevice.getCreated()).thenReturn(deviceCreated);
     when(refreshedDevice.getLastSeen()).thenReturn(deviceLastSeen);
+    when(refreshedDevice.getRegistrationId(IdentityType.ACI)).thenReturn(registrationId);
+    when(refreshedDevice.getCreatedAtCiphertext()).thenReturn(createdAtCiphertext);
 
     final Account refreshedAccount = mock(Account.class);
     when(refreshedAccount.getDevices()).thenReturn(List.of(refreshedDevice));
@@ -214,6 +217,8 @@ class DeviceControllerTest {
     assertArrayEquals(deviceName, deviceInfoList.devices().getFirst().name());
     assertEquals(deviceCreated, deviceInfoList.devices().getFirst().created());
     assertEquals(deviceLastSeen, deviceInfoList.devices().getFirst().lastSeen());
+    assertEquals(registrationId, deviceInfoList.devices().getFirst().registrationId());
+    assertArrayEquals(createdAtCiphertext, deviceInfoList.devices().getFirst().createdAtCiphertext());
   }
 
   @ParameterizedTest
@@ -234,15 +239,16 @@ class DeviceControllerTest {
     final KEMSignedPreKey aciPqLastResortPreKey;
     final KEMSignedPreKey pniPqLastResortPreKey;
 
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
     aciPqLastResortPreKey = KeysHelper.signedKEMPreKey(3, aciIdentityKeyPair);
     pniPqLastResortPreKey = KeysHelper.signedKEMPreKey(4, pniIdentityKeyPair);
 
-    when(account.getIdentityKey(IdentityType.ACI)).thenReturn(new IdentityKey(aciIdentityKeyPair.getPublicKey()));
+    final IdentityKey aciIdentityKey = new IdentityKey(aciIdentityKeyPair.getPublicKey());
+    when(account.getIdentityKey(IdentityType.ACI)).thenReturn(aciIdentityKey);
     when(account.getIdentityKey(IdentityType.PNI)).thenReturn(new IdentityKey(pniIdentityKeyPair.getPublicKey()));
 
     when(accountsManager.checkDeviceLinkingToken(anyString())).thenReturn(Optional.of(AuthHelper.VALID_UUID));
@@ -251,7 +257,7 @@ class DeviceControllerTest {
       final Account a = invocation.getArgument(0);
       final DeviceSpec deviceSpec = invocation.getArgument(1);
 
-      return CompletableFuture.completedFuture(new Pair<>(a, deviceSpec.toDevice(NEXT_DEVICE_ID, testClock)));
+      return CompletableFuture.completedFuture(new Pair<>(a, deviceSpec.toDevice(NEXT_DEVICE_ID, testClock, aciIdentityKey)));
     });
 
     when(asyncCommands.set(any(), any(), any())).thenReturn(MockRedisFuture.completedFuture(null));
@@ -274,7 +280,7 @@ class DeviceControllerTest {
     final ArgumentCaptor<DeviceSpec> deviceSpecCaptor = ArgumentCaptor.forClass(DeviceSpec.class);
     verify(accountsManager).addDevice(eq(account), deviceSpecCaptor.capture(), any());
 
-    final Device device = deviceSpecCaptor.getValue().toDevice(NEXT_DEVICE_ID, testClock);
+    final Device device = deviceSpecCaptor.getValue().toDevice(NEXT_DEVICE_ID, testClock, aciIdentityKey);
 
     assertEquals(fetchesMessages, device.getFetchesMessages());
 
@@ -315,8 +321,8 @@ class DeviceControllerTest {
     final KEMSignedPreKey aciPqLastResortPreKey;
     final KEMSignedPreKey pniPqLastResortPreKey;
 
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
@@ -367,8 +373,8 @@ class DeviceControllerTest {
     final KEMSignedPreKey aciPqLastResortPreKey;
     final KEMSignedPreKey pniPqLastResortPreKey;
 
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
@@ -403,8 +409,8 @@ class DeviceControllerTest {
     final KEMSignedPreKey aciPqLastResortPreKey;
     final KEMSignedPreKey pniPqLastResortPreKey;
 
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
@@ -452,8 +458,8 @@ class DeviceControllerTest {
     final KEMSignedPreKey aciPqLastResortPreKey;
     final KEMSignedPreKey pniPqLastResortPreKey;
 
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
@@ -503,8 +509,8 @@ class DeviceControllerTest {
     final KEMSignedPreKey aciPqLastResortPreKey;
     final KEMSignedPreKey pniPqLastResortPreKey;
 
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
@@ -577,8 +583,8 @@ class DeviceControllerTest {
   }
 
   private static Stream<Arguments> linkDeviceAtomicMissingProperty() {
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     final ECSignedPreKey aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     final ECSignedPreKey pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
@@ -603,8 +609,8 @@ class DeviceControllerTest {
     final KEMSignedPreKey aciPqLastResortPreKey;
     final KEMSignedPreKey pniPqLastResortPreKey;
 
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
@@ -670,8 +676,8 @@ class DeviceControllerTest {
   }
 
   private static Stream<Arguments> linkDeviceAtomicInvalidSignature() {
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     final ECSignedPreKey aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     final ECSignedPreKey pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
@@ -703,8 +709,8 @@ class DeviceControllerTest {
     final KEMSignedPreKey aciPqLastResortPreKey;
     final KEMSignedPreKey pniPqLastResortPreKey;
 
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
@@ -735,22 +741,23 @@ class DeviceControllerTest {
     when(existingDevice.getId()).thenReturn(Device.PRIMARY_ID);
     when(account.getDevices()).thenReturn(List.of(existingDevice));
 
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     final ECSignedPreKey aciSignedPreKey = KeysHelper.signedECPreKey(1, aciIdentityKeyPair);
     final ECSignedPreKey pniSignedPreKey = KeysHelper.signedECPreKey(2, pniIdentityKeyPair);
     final KEMSignedPreKey aciPqLastResortPreKey = KeysHelper.signedKEMPreKey(3, aciIdentityKeyPair);
     final KEMSignedPreKey pniPqLastResortPreKey = KeysHelper.signedKEMPreKey(4, pniIdentityKeyPair);
+    final IdentityKey aciIdentityKey = new IdentityKey(aciIdentityKeyPair.getPublicKey());
 
-    when(account.getIdentityKey(IdentityType.ACI)).thenReturn(new IdentityKey(aciIdentityKeyPair.getPublicKey()));
+    when(account.getIdentityKey(IdentityType.ACI)).thenReturn(aciIdentityKey);
     when(account.getIdentityKey(IdentityType.PNI)).thenReturn(new IdentityKey(pniIdentityKeyPair.getPublicKey()));
 
     when(accountsManager.addDevice(any(), any(), any())).thenAnswer(invocation -> {
       final Account a = invocation.getArgument(0);
       final DeviceSpec deviceSpec = invocation.getArgument(1);
 
-      return CompletableFuture.completedFuture(new Pair<>(a, deviceSpec.toDevice(NEXT_DEVICE_ID, testClock)));
+      return CompletableFuture.completedFuture(new Pair<>(a, deviceSpec.toDevice(NEXT_DEVICE_ID, testClock, aciIdentityKey)));
     });
 
     when(accountsManager.checkDeviceLinkingToken(anyString())).thenReturn(Optional.of(AuthHelper.VALID_UUID));
@@ -935,7 +942,7 @@ class DeviceControllerTest {
 
   @Test
   void setPublicKey() {
-    final SetPublicKeyRequest request = new SetPublicKeyRequest(Curve.generateKeyPair().getPublicKey());
+    final SetPublicKeyRequest request = new SetPublicKeyRequest(ECKeyPair.generate().getPublicKey());
 
     try (final Response response = resources.getJerseyTest()
         .target("/v1/devices/public_key")
@@ -954,7 +961,9 @@ class DeviceControllerTest {
     final DeviceInfo deviceInfo = new DeviceInfo(Device.PRIMARY_ID,
         "Device name ciphertext".getBytes(StandardCharsets.UTF_8),
         System.currentTimeMillis(),
-        System.currentTimeMillis());
+        System.currentTimeMillis(),
+        1,
+        "timestamp ciphertext".getBytes(StandardCharsets.UTF_8));
 
     final String tokenIdentifier = Base64.getUrlEncoder().withoutPadding().encodeToString(new byte[32]);
 
@@ -977,6 +986,8 @@ class DeviceControllerTest {
       assertArrayEquals(deviceInfo.name(), retrievedDeviceInfo.name());
       assertEquals(deviceInfo.created(), retrievedDeviceInfo.created());
       assertEquals(deviceInfo.lastSeen(), retrievedDeviceInfo.lastSeen());
+      assertEquals(deviceInfo.registrationId(), retrievedDeviceInfo.registrationId());
+      assertArrayEquals(deviceInfo.createdAtCiphertext(), retrievedDeviceInfo.createdAtCiphertext());
     }
   }
 
@@ -1392,8 +1403,8 @@ class DeviceControllerTest {
     final AccountAttributes accountAttributes = new AccountAttributes(true, 1234, 5678, null,
         null, true, Set.of());
 
-    final ECKeyPair aciIdentityKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniIdentityKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciIdentityKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniIdentityKeyPair = ECKeyPair.generate();
 
     final LinkDeviceRequest request = new LinkDeviceRequest(verificationCode,
         accountAttributes,

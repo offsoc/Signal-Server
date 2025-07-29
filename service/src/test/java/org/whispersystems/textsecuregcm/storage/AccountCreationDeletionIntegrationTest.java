@@ -3,6 +3,7 @@ package org.whispersystems.textsecuregcm.storage;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -36,7 +37,6 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junitpioneer.jupiter.cartesian.ArgumentSets;
 import org.junitpioneer.jupiter.cartesian.CartesianTest;
 import org.signal.libsignal.protocol.IdentityKey;
-import org.signal.libsignal.protocol.ecc.Curve;
 import org.signal.libsignal.protocol.ecc.ECKeyPair;
 import org.whispersystems.textsecuregcm.auth.DisconnectionRequestManager;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
@@ -218,8 +218,8 @@ public class AccountCreationDeletionIntegrationTest {
         CLOCK.instant().plus(Duration.ofDays(7)),
         true)));
 
-    final ECKeyPair aciKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniKeyPair = ECKeyPair.generate();
 
     final ECSignedPreKey aciSignedPreKey = KeysHelper.signedECPreKey(1, aciKeyPair);
     final ECSignedPreKey pniSignedPreKey = KeysHelper.signedECPreKey(2, pniKeyPair);
@@ -306,8 +306,8 @@ public class AccountCreationDeletionIntegrationTest {
 
     final UUID existingAccountUuid;
     {
-      final ECKeyPair aciKeyPair = Curve.generateKeyPair();
-      final ECKeyPair pniKeyPair = Curve.generateKeyPair();
+      final ECKeyPair aciKeyPair = ECKeyPair.generate();
+      final ECKeyPair pniKeyPair = ECKeyPair.generate();
 
       final ECSignedPreKey aciSignedPreKey = KeysHelper.signedECPreKey(1, aciKeyPair);
       final ECSignedPreKey pniSignedPreKey = KeysHelper.signedECPreKey(2, pniKeyPair);
@@ -359,8 +359,8 @@ public class AccountCreationDeletionIntegrationTest {
         CLOCK.instant().plus(Duration.ofDays(7)),
         true)));
 
-    final ECKeyPair aciKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniKeyPair = ECKeyPair.generate();
 
     final ECSignedPreKey aciSignedPreKey = KeysHelper.signedECPreKey(1, aciKeyPair);
     final ECSignedPreKey pniSignedPreKey = KeysHelper.signedECPreKey(2, pniKeyPair);
@@ -448,8 +448,8 @@ public class AccountCreationDeletionIntegrationTest {
         CLOCK.instant().plus(Duration.ofDays(7)),
         true)));
 
-    final ECKeyPair aciKeyPair = Curve.generateKeyPair();
-    final ECKeyPair pniKeyPair = Curve.generateKeyPair();
+    final ECKeyPair aciKeyPair = ECKeyPair.generate();
+    final ECKeyPair pniKeyPair = ECKeyPair.generate();
 
     final ECSignedPreKey aciSignedPreKey = KeysHelper.signedECPreKey(1, aciKeyPair);
     final ECSignedPreKey pniSignedPreKey = KeysHelper.signedECPreKey(2, pniKeyPair);
@@ -477,7 +477,7 @@ public class AccountCreationDeletionIntegrationTest {
             pniPqLastResortPreKey),
         null);
 
-    clientPublicKeysManager.setPublicKey(account, Device.PRIMARY_ID, Curve.generateKeyPair().getPublicKey()).join();
+    clientPublicKeysManager.setPublicKey(account, Device.PRIMARY_ID, ECKeyPair.generate().getPublicKey()).join();
 
     final UUID aci = account.getIdentifier(IdentityType.ACI);
 
@@ -537,7 +537,7 @@ public class AccountCreationDeletionIntegrationTest {
 
     assertTrue(account.getRegistrationLock().verify(registrationLockSecret));
     assertTrue(primaryDevice.getAuthTokenHash().verify(password));
-
+    assertNotNull(primaryDevice.getCreatedAtCiphertext());
     assertEquals(Optional.of(aciSignedPreKey), keysManager.getEcSignedPreKey(account.getIdentifier(IdentityType.ACI), Device.PRIMARY_ID).join());
     assertEquals(Optional.of(pniSignedPreKey), keysManager.getEcSignedPreKey(account.getIdentifier(IdentityType.PNI), Device.PRIMARY_ID).join());
     assertEquals(Optional.of(aciPqLastResortPreKey), keysManager.getLastResort(account.getIdentifier(IdentityType.ACI), Device.PRIMARY_ID).join());
