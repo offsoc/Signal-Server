@@ -5173,10 +5173,10 @@ components:
           type: integer
           description: |2
               The timestamp, in milliseconds since the epoch, at which the destination device was created.
-              Deprecated in favor of registrationId.
+              Deprecated in favor of `destinationDeviceRegistrationId`.
           format: int64
           deprecated: true
-        registrationId:
+        destinationDeviceRegistrationId:
           type: integer
           description: The registration ID of the destination device
           format: int32
