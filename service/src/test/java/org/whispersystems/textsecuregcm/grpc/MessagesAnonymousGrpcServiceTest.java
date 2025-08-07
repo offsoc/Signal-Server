@@ -282,7 +282,7 @@ class MessagesAnonymousGrpcServiceTest extends
       incorrectUnidentifiedAccessKey[0] += 1;
 
       final byte[] incorrectGroupSendToken = GROUP_SEND_TOKEN.clone();
-      incorrectGroupSendToken[0] += 1;
+      incorrectGroupSendToken[0] = (byte) (incorrectGroupSendToken[0] + 1);
 
       //noinspection ResultOfMethodCallIgnored
       GrpcTestUtils.assertStatusException(Status.UNAUTHENTICATED,
