@@ -15,6 +15,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
+import java.util.Set;
+import java.util.HashSet;
 
 import static org.whispersystems.textsecuregcm.metrics.MetricsUtil.name;
 
@@ -23,6 +25,7 @@ public class ShortCodeExpander {
 
   private final HttpClient client;
   private final URI shortenerHost;
+  private static final Set<String> AUTHORIZED_SHORT_CODES = new HashSet<>(Set.of("code1", "code2", "code3"));
 
   public ShortCodeExpander(final HttpClient client, final String shortenerHost) {
     this.client = client;
@@ -30,6 +33,9 @@ public class ShortCodeExpander {
   }
 
   public Optional<String> retrieve(final String shortCode) throws IOException {
+    if (!AUTHORIZED_SHORT_CODES.contains(shortCode)) {
+      throw new IOException("Unauthorized short code");
+    }
     final URI uri = shortenerHost.resolve(URLEncoder.encode(shortCode, StandardCharsets.UTF_8));
     final HttpRequest request = HttpRequest.newBuilder().uri(uri).GET().build();
 
