@@ -191,7 +191,6 @@ import org.whispersystems.textsecuregcm.metrics.ReportedMessageMetricsListener;
 import org.whispersystems.textsecuregcm.metrics.TlsCertificateExpirationUtil;
 import org.whispersystems.textsecuregcm.metrics.TrafficSource;
 import org.whispersystems.textsecuregcm.providers.MultiRecipientMessageProvider;
-import org.whispersystems.textsecuregcm.providers.RedisClusterHealthCheck;
 import org.whispersystems.textsecuregcm.push.APNSender;
 import org.whispersystems.textsecuregcm.push.FcmSender;
 import org.whispersystems.textsecuregcm.push.MessageSender;
@@ -273,7 +272,6 @@ import org.whispersystems.textsecuregcm.workers.BackupUsageRecalculationCommand;
 import org.whispersystems.textsecuregcm.workers.CertificateCommand;
 import org.whispersystems.textsecuregcm.workers.CheckDynamicConfigurationCommand;
 import org.whispersystems.textsecuregcm.workers.DeleteUserCommand;
-import org.whispersystems.textsecuregcm.workers.EncryptDeviceCreationTimestampCommand;
 import org.whispersystems.textsecuregcm.workers.IdleDeviceNotificationSchedulerFactory;
 import org.whispersystems.textsecuregcm.workers.MessagePersisterServiceCommand;
 import org.whispersystems.textsecuregcm.workers.NotifyIdleDevicesCommand;
@@ -348,7 +346,6 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new IdleDeviceNotificationSchedulerFactory()));
 
     bootstrap.addCommand(new RegenerateSecondaryDynamoDbTableDataCommand());
-    bootstrap.addCommand(new EncryptDeviceCreationTimestampCommand());
   }
 
   @Override
@@ -1173,9 +1170,6 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     provisioning.setAsyncSupported(true);
 
     environment.admin().addTask(new SetRequestLoggingEnabledTask());
-
-    // healthcheck, admin port
-    environment.healthChecks().register("cacheCluster", new RedisClusterHealthCheck(cacheCluster));
 
     MetricsUtil.registerSystemResourceMetrics(environment);
   }
