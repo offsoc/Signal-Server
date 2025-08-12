@@ -110,7 +110,6 @@ import org.whispersystems.textsecuregcm.storage.PhoneNumberIdentifiers;
 import org.whispersystems.textsecuregcm.storage.ReportMessageManager;
 import org.whispersystems.textsecuregcm.util.HeaderUtils;
 import org.whispersystems.textsecuregcm.util.Util;
-import org.whispersystems.textsecuregcm.websocket.WebSocketConnection;
 import org.whispersystems.websocket.WebsocketHeaders;
 import reactor.core.scheduler.Scheduler;
 
@@ -153,11 +152,15 @@ public class MessageController {
     INDIVIDUAL_MESSAGE_LATENCY_TIMER = Timer.builder(timerName)
         .tags(multiRecipientTagName, "false")
         .publishPercentileHistogram(true)
+        .minimumExpectedValue(Duration.ofMillis(1))
+        .minimumExpectedValue(Duration.ofSeconds(10))
         .register(Metrics.globalRegistry);
 
     MULTI_RECIPIENT_MESSAGE_LATENCY_TIMER = Timer.builder(timerName)
         .tags(multiRecipientTagName, "true")
         .publishPercentileHistogram(true)
+        .minimumExpectedValue(Duration.ofMillis(1))
+        .minimumExpectedValue(Duration.ofSeconds(10))
         .register(Metrics.globalRegistry);
   }
 
@@ -841,15 +844,8 @@ public class MessageController {
     final Device device = account.getDevice(auth.deviceId())
         .orElseThrow(() -> new WebApplicationException(Status.UNAUTHORIZED));
 
-    return messagesManager.delete(
-            auth.accountIdentifier(),
-            device,
-            uuid,
-            null)
+    return messagesManager.delete(auth.accountIdentifier(), device, uuid, null)
         .thenAccept(maybeRemovedMessage -> maybeRemovedMessage.ifPresent(removedMessage -> {
-
-          WebSocketConnection.recordMessageDeliveryDuration(removedMessage.serverTimestamp(), device);
-
           if (removedMessage.sourceServiceId().isPresent()
               && removedMessage.envelopeType() != Type.SERVER_DELIVERY_RECEIPT) {
             if (removedMessage.sourceServiceId().get() instanceof AciServiceIdentifier aciServiceIdentifier) {
