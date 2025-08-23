@@ -27,7 +27,6 @@ import io.lettuce.core.metrics.MicrometerCommandLatencyRecorder;
 import io.lettuce.core.metrics.MicrometerOptions;
 import io.lettuce.core.resource.ClientResources;
 import io.micrometer.core.instrument.Metrics;
-import io.micrometer.core.instrument.binder.grpc.MetricCollectingServerInterceptor;
 import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
 import io.netty.channel.local.LocalAddress;
 import io.netty.channel.socket.nio.NioDatagramChannel;
@@ -40,7 +39,6 @@ import jakarta.servlet.Filter;
 import jakarta.servlet.ServletRegistration;
 import java.io.ByteArrayInputStream;
 import java.io.FileInputStream;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
@@ -148,6 +146,7 @@ import org.whispersystems.textsecuregcm.grpc.ExternalServiceCredentialsAnonymous
 import org.whispersystems.textsecuregcm.grpc.ExternalServiceCredentialsGrpcService;
 import org.whispersystems.textsecuregcm.grpc.KeysAnonymousGrpcService;
 import org.whispersystems.textsecuregcm.grpc.KeysGrpcService;
+import org.whispersystems.textsecuregcm.grpc.MetricServerInterceptor;
 import org.whispersystems.textsecuregcm.grpc.PaymentsGrpcService;
 import org.whispersystems.textsecuregcm.grpc.ProfileAnonymousGrpcService;
 import org.whispersystems.textsecuregcm.grpc.ProfileGrpcService;
@@ -459,7 +458,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     MessagesDynamoDb messagesDynamoDb = new MessagesDynamoDb(dynamoDbClient, dynamoDbAsyncClient,
         config.getDynamoDbTables().getMessages().getTableName(),
         config.getDynamoDbTables().getMessages().getExpiration(),
-        messageDeletionAsyncExecutor);
+        messageDeletionAsyncExecutor, experimentEnrollmentManager);
     RemoteConfigs remoteConfigs = new RemoteConfigs(dynamoDbClient,
         config.getDynamoDbTables().getRemoteConfig().getTableName());
     PushChallengeDynamoDb pushChallengeDynamoDb = new PushChallengeDynamoDb(dynamoDbClient,
@@ -640,7 +639,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     DisconnectionRequestManager disconnectionRequestManager = new DisconnectionRequestManager(pubsubClient, grpcClientConnectionManager, disconnectionRequestListenerExecutor);
     ProfilesManager profilesManager = new ProfilesManager(profiles, cacheCluster, asyncCdnS3Client, config.getCdnConfiguration().bucket());
     MessagesCache messagesCache = new MessagesCache(messagesCluster, messageDeliveryScheduler,
-        messageDeletionAsyncExecutor, clock);
+        messageDeletionAsyncExecutor, clock, experimentEnrollmentManager);
     ClientReleaseManager clientReleaseManager = new ClientReleaseManager(clientReleases,
         recurringJobExecutor,
         config.getClientReleaseConfiguration().refreshInterval(),
@@ -830,8 +829,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     final ManagedDefaultEventLoopGroup localEventLoopGroup = new ManagedDefaultEventLoopGroup();
 
     final RemoteDeprecationFilter remoteDeprecationFilter = new RemoteDeprecationFilter(dynamicConfigurationManager);
-    final MetricCollectingServerInterceptor metricCollectingServerInterceptor =
-        new MetricCollectingServerInterceptor(Metrics.globalRegistry);
+    final MetricServerInterceptor metricServerInterceptor = new MetricServerInterceptor(Metrics.globalRegistry, clientReleaseManager);
 
     final ErrorMappingInterceptor errorMappingInterceptor = new ErrorMappingInterceptor();
     final RequestAttributesInterceptor requestAttributesInterceptor =
@@ -853,8 +851,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
                 new ExternalRequestFilter(config.getExternalRequestFilterConfiguration().permittedInternalRanges(),
                     config.getExternalRequestFilterConfiguration().grpcMethods()))
             .intercept(validatingInterceptor)
-            // TODO: specialize metrics with user-agent platform
-            .intercept(metricCollectingServerInterceptor)
+            .intercept(metricServerInterceptor)
             .intercept(errorMappingInterceptor)
             .intercept(remoteDeprecationFilter)
             .intercept(requestAttributesInterceptor)
@@ -874,9 +871,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         // depends on the user-agent context so it has to come first here!
         // http://grpc.github.io/grpc-java/javadoc/io/grpc/ServerBuilder.html#intercept-io.grpc.ServerInterceptor-
         serverBuilder
-            // TODO: specialize metrics with user-agent platform
             .intercept(validatingInterceptor)
-            .intercept(metricCollectingServerInterceptor)
+            .intercept(metricServerInterceptor)
             .intercept(errorMappingInterceptor)
             .intercept(remoteDeprecationFilter)
             .intercept(requestAttributesInterceptor)
@@ -982,7 +978,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     final MetricsHttpChannelListener metricsHttpChannelListener = new MetricsHttpChannelListener(clientReleaseManager,
         Set.of(websocketServletPath, provisioningWebsocketServletPath, "/health-check"));
     metricsHttpChannelListener.configure(environment);
-    final MessageMetrics messageMetrics = new MessageMetrics(config.getDynamoDbTables().getMessages().getExpiration());
+    final MessageMetrics messageMetrics = new MessageMetrics();
     final BackupMetrics backupMetrics = new BackupMetrics();
 
     // BufferingInterceptor is needed on the base environment but not the WebSocketEnvironment,
