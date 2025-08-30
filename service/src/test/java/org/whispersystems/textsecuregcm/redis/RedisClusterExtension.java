@@ -22,6 +22,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import org.apache.commons.lang3.RandomStringUtils;
 import org.junit.jupiter.api.extension.AfterEachCallback;
 import org.junit.jupiter.api.extension.BeforeAllCallback;
 import org.junit.jupiter.api.extension.BeforeEachCallback;
@@ -30,7 +31,7 @@ import org.testcontainers.containers.ComposeContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.containers.wait.strategy.WaitStrategy;
 import org.whispersystems.textsecuregcm.configuration.CircuitBreakerConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RetryConfiguration;
+import org.whispersystems.textsecuregcm.util.ResilienceUtil;
 import org.whispersystems.textsecuregcm.util.TestcontainersImages;
 
 public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallback, AfterEachCallback, ExtensionContext.Store.CloseableResource {
@@ -40,10 +41,12 @@ public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallb
   private static List<RedisURI> redisUris;
 
   private final Duration timeout;
-  private final RetryConfiguration retryConfiguration;
 
   private ClientResources redisClientResources;
   private FaultTolerantRedisClusterClient redisClusterClient;
+
+  private static final String CIRCUIT_BREAKER_CONFIGURATION_NAME =
+      RedisClusterExtension.class.getSimpleName() + "-" + RandomStringUtils.insecure().nextAlphanumeric(8);
 
   private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(2);
 
@@ -79,9 +82,8 @@ public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallb
             - 'REDIS_CLUSTER_CREATOR=yes'
       """, TestcontainersImages.getRedisCluster());
 
-  public RedisClusterExtension(final Duration timeout, final RetryConfiguration retryConfiguration) {
+  public RedisClusterExtension(final Duration timeout) {
     this.timeout = timeout;
-    this.retryConfiguration = retryConfiguration;
   }
 
 
@@ -100,6 +102,11 @@ public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallb
   @Override
   public void beforeAll(final ExtensionContext context) throws Exception {
     if (composeContainer == null) {
+      final CircuitBreakerConfiguration circuitBreakerConfig = new CircuitBreakerConfiguration();
+      circuitBreakerConfig.setWaitDurationInOpenState(Duration.ofMillis(500));
+
+      ResilienceUtil.getCircuitBreakerRegistry().addConfiguration(CIRCUIT_BREAKER_CONFIGURATION_NAME, circuitBreakerConfig.toCircuitBreakerConfig());
+
       final File clusterComposeFile = File.createTempFile("redis-cluster", ".yml");
       clusterComposeFile.deleteOnExit();
 
@@ -184,15 +191,11 @@ public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallb
         .socketAddressResolver(getSocketAddressResolver())
         .build();
 
-    final CircuitBreakerConfiguration circuitBreakerConfig = new CircuitBreakerConfiguration();
-    circuitBreakerConfig.setWaitDurationInOpenState(Duration.ofMillis(500));
-
     redisClusterClient = new FaultTolerantRedisClusterClient("test-cluster",
         redisClientResources.mutate(),
         getRedisURIs(),
         timeout,
-        circuitBreakerConfig,
-        retryConfiguration);
+        CIRCUIT_BREAKER_CONFIGURATION_NAME);
 
     redisClusterClient.useCluster(connection -> connection.sync().flushall(FlushMode.SYNC));
   }
@@ -226,7 +229,6 @@ public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallb
   public static class Builder {
 
     private Duration timeout = DEFAULT_TIMEOUT;
-    private RetryConfiguration retryConfiguration = new RetryConfiguration();
 
     private Builder() {
     }
@@ -236,13 +238,8 @@ public class RedisClusterExtension implements BeforeAllCallback, BeforeEachCallb
       return this;
     }
 
-    Builder retryConfiguration(RetryConfiguration retryConfiguration) {
-      this.retryConfiguration = retryConfiguration;
-      return this;
-    }
-
     public RedisClusterExtension build() {
-      return new RedisClusterExtension(timeout, retryConfiguration);
+      return new RedisClusterExtension(timeout);
     }
   }
 }

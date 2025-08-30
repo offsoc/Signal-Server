@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.lettuce.core.RedisCommandTimeoutException;
 import io.lettuce.core.RedisException;
 import io.lettuce.core.resource.ClientResources;
@@ -17,7 +18,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.whispersystems.textsecuregcm.configuration.CircuitBreakerConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RetryConfiguration;
 
 // ThreadMode.SEPARATE_THREAD protects against hangs in the remote Redis calls, as this mode allows the test code to be
 // preempted by the timeout check
@@ -25,13 +25,6 @@ import org.whispersystems.textsecuregcm.configuration.RetryConfiguration;
 class FaultTolerantRedisClientTest {
 
   private static final Duration TIMEOUT = Duration.ofMillis(50);
-
-  private static final RetryConfiguration RETRY_CONFIGURATION = new RetryConfiguration();
-
-  static {
-    RETRY_CONFIGURATION.setMaxAttempts(1);
-    RETRY_CONFIGURATION.setWaitDuration(50);
-  }
 
   @RegisterExtension
   static final RedisServerExtension REDIS_SERVER_EXTENSION = RedisServerExtension.builder().build();
@@ -42,10 +35,14 @@ class FaultTolerantRedisClientTest {
       @Nullable final CircuitBreakerConfiguration circuitBreakerConfiguration,
       final ClientResources.Builder clientResourcesBuilder) {
 
-    return new FaultTolerantRedisClient("test", clientResourcesBuilder,
-        RedisServerExtension.getRedisURI(), TIMEOUT,
-        Optional.ofNullable(circuitBreakerConfiguration).orElseGet(CircuitBreakerConfiguration::new),
-        RETRY_CONFIGURATION);
+    final CircuitBreaker circuitBreaker = CircuitBreaker.of("test", Optional.ofNullable(circuitBreakerConfiguration)
+            .orElseGet(CircuitBreakerConfiguration::new).toCircuitBreakerConfig());
+
+    return new FaultTolerantRedisClient("test",
+        clientResourcesBuilder,
+        RedisServerExtension.getRedisURI(),
+        TIMEOUT,
+        circuitBreaker);
   }
 
   @AfterEach

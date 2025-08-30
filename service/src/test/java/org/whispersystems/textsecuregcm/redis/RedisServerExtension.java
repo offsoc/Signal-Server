@@ -6,6 +6,7 @@
 package org.whispersystems.textsecuregcm.redis;
 
 import com.redis.testcontainers.RedisContainer;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.lettuce.core.FlushMode;
 import io.lettuce.core.RedisURI;
 import io.lettuce.core.resource.ClientResources;
@@ -16,7 +17,6 @@ import org.junit.jupiter.api.extension.BeforeEachCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
 import org.testcontainers.utility.DockerImageName;
 import org.whispersystems.textsecuregcm.configuration.CircuitBreakerConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RetryConfiguration;
 import org.whispersystems.textsecuregcm.util.TestcontainersImages;
 
 public class RedisServerExtension implements BeforeAllCallback, BeforeEachCallback, AfterEachCallback, ExtensionContext.Store.CloseableResource {
@@ -65,8 +65,7 @@ public class RedisServerExtension implements BeforeAllCallback, BeforeEachCallba
         redisClientResources.mutate(),
         getRedisURI(),
         Duration.ofSeconds(2),
-        circuitBreakerConfig,
-        new RetryConfiguration());
+        CircuitBreaker.of("test", circuitBreakerConfig.toCircuitBreakerConfig()));
 
     faultTolerantRedisClient.useConnection(connection -> connection.sync().flushall(FlushMode.SYNC));
   }

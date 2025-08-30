@@ -1,10 +1,9 @@
 package org.whispersystems.textsecuregcm.redis;
 
+import com.google.common.annotations.VisibleForTesting;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import io.github.resilience4j.retry.Retry;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.RedisClient;
-import io.lettuce.core.RedisCommandTimeoutException;
 import io.lettuce.core.RedisException;
 import io.lettuce.core.RedisURI;
 import io.lettuce.core.TimeoutOptions;
@@ -17,10 +16,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Function;
-import org.whispersystems.textsecuregcm.configuration.CircuitBreakerConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RedisConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RetryConfiguration;
-import org.whispersystems.textsecuregcm.util.CircuitBreakerUtil;
+import org.whispersystems.textsecuregcm.util.ResilienceUtil;
 
 public class FaultTolerantRedisClient {
 
@@ -34,7 +31,6 @@ public class FaultTolerantRedisClient {
   private final List<StatefulRedisPubSubConnection<?, ?>> pubSubConnections = new ArrayList<>();
 
   private final CircuitBreaker circuitBreaker;
-  private final Retry retry;
 
   public FaultTolerantRedisClient(final String name,
                                   final RedisConfiguration redisConfiguration,
@@ -43,16 +39,21 @@ public class FaultTolerantRedisClient {
     this(name, clientResourcesBuilder,
         RedisUriUtil.createRedisUriWithTimeout(redisConfiguration.getUri(), redisConfiguration.getTimeout()),
         redisConfiguration.getTimeout(),
-        redisConfiguration.getCircuitBreakerConfiguration(),
-        redisConfiguration.getRetryConfiguration());
+        redisConfiguration.getCircuitBreakerConfigurationName() != null
+            ? ResilienceUtil.getCircuitBreakerRegistry().circuitBreaker(getCircuitBreakerName(name), redisConfiguration.getCircuitBreakerConfigurationName())
+            : ResilienceUtil.getCircuitBreakerRegistry().circuitBreaker(getCircuitBreakerName(name)));
   }
 
+  private static String getCircuitBreakerName(final String name) {
+    return ResilienceUtil.name(FaultTolerantRedisClient.class, name);
+  }
+
+  @VisibleForTesting
   FaultTolerantRedisClient(String name,
                            final ClientResources.Builder clientResourcesBuilder,
                            final RedisURI redisUri,
                            final Duration commandTimeout,
-                           final CircuitBreakerConfiguration circuitBreakerConfiguration,
-                           final RetryConfiguration retryConfiguration) {
+                           final CircuitBreaker circuitBreaker) {
 
     this.name = name;
 
@@ -80,11 +81,7 @@ public class FaultTolerantRedisClient {
     this.stringConnection = redisClient.connect();
     this.binaryConnection = redisClient.connect(ByteArrayCodec.INSTANCE);
 
-    this.circuitBreaker = CircuitBreaker.of(name + "-breaker", circuitBreakerConfiguration.toCircuitBreakerConfig());
-    this.retry = Retry.of(name + "-retry", retryConfiguration.toRetryConfigBuilder()
-        .retryOnException(exception -> exception instanceof RedisCommandTimeoutException).build());
-
-    CircuitBreakerUtil.registerMetrics(retry, FaultTolerantRedisClient.class);
+    this.circuitBreaker = circuitBreaker;
   }
 
   public void shutdown() {
@@ -120,7 +117,7 @@ public class FaultTolerantRedisClient {
   private <K, V> void useConnection(final StatefulRedisConnection<K, V> connection,
       final Consumer<StatefulRedisConnection<K, V>> consumer) {
     try {
-      circuitBreaker.executeRunnable(() -> retry.executeRunnable(() -> consumer.accept(connection)));
+      circuitBreaker.executeRunnable(() -> consumer.accept(connection));
     } catch (final Throwable t) {
       if (t instanceof RedisException) {
         throw (RedisException) t;
@@ -133,7 +130,7 @@ public class FaultTolerantRedisClient {
   private <T, K, V> T withConnection(final StatefulRedisConnection<K, V> connection,
       final Function<StatefulRedisConnection<K, V>, T> function) {
     try {
-      return circuitBreaker.executeCallable(() -> retry.executeCallable(() -> function.apply(connection)));
+      return circuitBreaker.executeCallable(() -> function.apply(connection));
     } catch (final Throwable t) {
       if (t instanceof RedisException) {
         throw (RedisException) t;

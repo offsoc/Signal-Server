@@ -25,6 +25,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.junit.jupiter.api.AfterAll;
@@ -85,7 +86,7 @@ class RedisDynamoDbMessagePublisherTest {
         mock(ExperimentEnrollmentManager.class));
 
     messagesCache = new MessagesCache(REDIS_CLUSTER_EXTENSION.getRedisCluster(),
-        messageDeliveryScheduler, sharedExecutorService, Clock.systemUTC(), mock(ExperimentEnrollmentManager.class));
+        messageDeliveryScheduler, sharedExecutorService, mock(ScheduledExecutorService.class), Clock.systemUTC(), mock(ExperimentEnrollmentManager.class));
 
     redisMessageAvailabilityManager = mock(RedisMessageAvailabilityManager.class);
 
@@ -205,7 +206,10 @@ class RedisDynamoDbMessagePublisherTest {
       }
 
       deleteRedisMessage(redisMessage);
+      messagePublisher.handleMessageAcknowledged();
+
       deleteDynamoDbMessage(dynamoDbMessage);
+      messagePublisher.handleMessageAcknowledged();
 
       insertRedisMessage(newArrivalRedisMessage);
       messagePublisher.handleNewMessageAvailable();
@@ -244,7 +248,10 @@ class RedisDynamoDbMessagePublisherTest {
       }
 
       deleteRedisMessage(redisMessage);
+      messagePublisher.handleMessageAcknowledged();
+
       deleteDynamoDbMessage(dynamoDbMessage);
+      messagePublisher.handleMessageAcknowledged();
 
       insertDynamoDbMessage(persistedMessage);
       messagePublisher.handleMessagesPersisted();
@@ -260,6 +267,41 @@ class RedisDynamoDbMessagePublisherTest {
         .expectNext(new MessageStreamEntry.Envelope(redisMessage))
         .expectNext(new MessageStreamEntry.QueueEmpty())
         .expectNext(new MessageStreamEntry.Envelope(persistedMessage))
+        .verifyTimeout(Duration.ofMillis(500));
+  }
+
+  @Test
+  void publishMessagesWaitForAcknowledgement() {
+    final MessageProtos.Envelope dynamoDbMessage = insertDynamoDbMessage(generateRandomMessage());
+    final MessageProtos.Envelope redisMessage = insertRedisMessage(generateRandomMessage());
+
+    final MessageProtos.Envelope persistedMessage = generateRandomMessage();
+
+    final RedisDynamoDbMessagePublisher messagePublisher =
+        new RedisDynamoDbMessagePublisher(messagesDynamoDb, messagesCache, redisMessageAvailabilityManager, DESTINATION_SERVICE_IDENTIFIER.uuid(), destinationDevice);
+
+    final CountDownLatch queueEmptyCountDownLatch = new CountDownLatch(1);
+
+    Thread.ofVirtual().start(() -> {
+      try {
+        queueEmptyCountDownLatch.await();
+      } catch (final InterruptedException e) {
+        throw new RuntimeException(e);
+      }
+
+      insertDynamoDbMessage(persistedMessage);
+      messagePublisher.handleMessagesPersisted();
+    });
+
+    StepVerifier.create(JdkFlowAdapter.flowPublisherToFlux(messagePublisher)
+            .doOnNext(entry -> {
+              if (entry instanceof MessageStreamEntry.QueueEmpty) {
+                queueEmptyCountDownLatch.countDown();
+              }
+            }))
+        .expectNext(new MessageStreamEntry.Envelope(dynamoDbMessage))
+        .expectNext(new MessageStreamEntry.Envelope(redisMessage))
+        .expectNext(new MessageStreamEntry.QueueEmpty())
         .verifyTimeout(Duration.ofMillis(500));
   }
 
