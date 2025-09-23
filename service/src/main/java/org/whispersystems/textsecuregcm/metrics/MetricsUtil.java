@@ -8,6 +8,7 @@ package org.whispersystems.textsecuregcm.metrics;
 import com.codahale.metrics.SharedMetricRegistries;
 import com.google.common.annotations.VisibleForTesting;
 import io.dropwizard.core.setup.Environment;
+import io.dropwizard.lifecycle.Managed;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
@@ -21,7 +22,18 @@ import io.micrometer.core.instrument.config.MeterFilter;
 import io.micrometer.core.instrument.distribution.DistributionStatisticConfig;
 import io.micrometer.registry.otlp.OtlpMeterRegistry;
 import io.micrometer.statsd.StatsdMeterRegistry;
+import io.opentelemetry.exporter.otlp.http.logs.OtlpHttpLogRecordExporter;
+import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.logs.SdkLoggerProvider;
+import io.opentelemetry.sdk.logs.export.BatchLogRecordProcessor;
+import io.opentelemetry.sdk.resources.Resource;
+import io.opentelemetry.sdk.resources.ResourceBuilder;
+import io.opentelemetry.semconv.ServiceAttributes;
+
 import java.time.Duration;
+import java.util.Map;
+import java.util.Optional;
 import org.whispersystems.textsecuregcm.WhisperServerConfiguration;
 import org.whispersystems.textsecuregcm.WhisperServerVersion;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
@@ -97,6 +109,44 @@ public class MetricsUtil {
     environment.lifecycle().addEventListener(new ApplicationShutdownMonitor(Metrics.globalRegistry));
     environment.lifecycle().addEventListener(
         new MicrometerRegistryManager(Metrics.globalRegistry, shutdownWaitDuration));
+  }
+
+  public static void configureLogging(final WhisperServerConfiguration config, final Environment environment) {
+    if (!config.getOpenTelemetryConfiguration().enabled()) {
+      return;
+    }
+
+    final Map<String, String> env = System.getenv();
+    final String endpoint =
+      Optional.ofNullable(env.get("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"))
+        .or(() -> Optional.ofNullable(env.get("OTEL_EXPORTER_OTLP_ENDPOINT")))
+        .map(u -> u.endsWith("/v1/logs") ? u : u + "/v1/logs")
+        .orElse("http://localhost:4318/v1/logs");
+
+    final ResourceBuilder resource = Resource.builder();
+    config.getOpenTelemetryConfiguration().resourceAttributes().forEach((k, v) -> resource.put(k, v));
+
+    final OpenTelemetrySdk openTelemetry =
+      OpenTelemetrySdk.builder()
+        .setLoggerProvider(
+          SdkLoggerProvider.builder()
+            .setResource(resource.build())
+            .addLogRecordProcessor(
+              BatchLogRecordProcessor.builder(
+                OtlpHttpLogRecordExporter.builder()
+                  .setEndpoint(endpoint)
+                  .build()).build())
+            .build())
+        .build();
+
+    OpenTelemetryAppender.install(openTelemetry);
+
+    environment.lifecycle().manage(new Managed() {
+      @Override
+      public void stop() {
+        openTelemetry.shutdown();
+      }
+    });
   }
 
   @VisibleForTesting
