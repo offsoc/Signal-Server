@@ -86,6 +86,7 @@ public class MetricsUtil {
               "env", config.getDatadogConfiguration().getEnvironment()));
 
       configureMeterFilters(dogstatsdMeterRegistry.config(), dynamicConfigurationManager);
+      configureDatadogAllowList(dogstatsdMeterRegistry.config(), dynamicConfigurationManager);
       Metrics.addRegistry(dogstatsdMeterRegistry);
 
       shutdownWaitDuration = config.getDatadogConfiguration().getShutdownWaitDuration();
@@ -109,6 +110,8 @@ public class MetricsUtil {
     environment.lifecycle().addEventListener(new ApplicationShutdownMonitor(Metrics.globalRegistry));
     environment.lifecycle().addEventListener(
         new MicrometerRegistryManager(Metrics.globalRegistry, shutdownWaitDuration));
+
+    registerSystemResourceMetrics();
   }
 
   public static void configureLogging(final WhisperServerConfiguration config, final Environment environment) {
@@ -186,7 +189,15 @@ public class MetricsUtil {
             && id.getName().startsWith(awsSdkMetricNamePrefix)));
   }
 
-  public static void registerSystemResourceMetrics(final Environment environment) {
+  @VisibleForTesting
+  static void configureDatadogAllowList(
+      final MeterRegistry.Config config, final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager) {
+    config.meterFilter(MeterFilter.denyUnless(id ->
+            dynamicConfigurationManager.getConfiguration().getMetricsConfiguration().datadogAllowList() == null ||
+            dynamicConfigurationManager.getConfiguration().getMetricsConfiguration().datadogAllowList().contains(id.getName())));
+  }
+
+  static void registerSystemResourceMetrics() {
     new ProcessorMetrics().bindTo(Metrics.globalRegistry);
     new FileDescriptorMetrics().bindTo(Metrics.globalRegistry);
 
