@@ -28,8 +28,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
-import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junitpioneer.jupiter.cartesian.CartesianTest;
 import org.mockito.Mock;
 import org.signal.chat.backup.BackupsGrpc;
@@ -51,6 +51,7 @@ import org.signal.libsignal.zkgroup.receipts.ReceiptCredentialRequestContext;
 import org.signal.libsignal.zkgroup.receipts.ReceiptCredentialResponse;
 import org.signal.libsignal.zkgroup.receipts.ReceiptSerial;
 import org.signal.libsignal.zkgroup.receipts.ServerZkReceiptOperations;
+import org.whispersystems.textsecuregcm.auth.RedemptionRange;
 import org.whispersystems.textsecuregcm.backup.BackupAuthManager;
 import org.whispersystems.textsecuregcm.backup.BackupAuthTestUtil;
 import org.whispersystems.textsecuregcm.controllers.RateLimitExceededException;
@@ -105,30 +106,31 @@ class BackupsGrpcServiceTest extends SimpleBaseGrpcTest<BackupsGrpcService, Back
             .setMessagesBackupAuthCredentialRequest(ByteString.copyFrom(messagesAuthCredRequest.serialize()))
             .build());
 
-    verify(backupAuthManager).commitBackupId(account, device, messagesAuthCredRequest, mediaAuthCredRequest);
+    verify(backupAuthManager)
+        .commitBackupId(account, device, Optional.of(messagesAuthCredRequest), Optional.of(mediaAuthCredRequest));
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void setBackupIdPartial(boolean media) {
+    when(backupAuthManager.commitBackupId(any(), any(), any(), any()))
+        .thenReturn(CompletableFuture.completedFuture(null));
+
+    final SetBackupIdRequest.Builder builder = SetBackupIdRequest.newBuilder();
+    if (media) {
+      builder.setMediaBackupAuthCredentialRequest(ByteString.copyFrom(mediaAuthCredRequest.serialize()));
+    } else {
+      builder.setMessagesBackupAuthCredentialRequest(ByteString.copyFrom(messagesAuthCredRequest.serialize()));
+    }
+    authenticatedServiceStub().setBackupId(builder.build());
+    verify(backupAuthManager)
+        .commitBackupId(account, device,
+            Optional.ofNullable(media ? null : messagesAuthCredRequest),
+            Optional.ofNullable(media ? mediaAuthCredRequest: null));
   }
 
   @Test
   void setBackupIdInvalid() {
-    // missing media credential
-    GrpcTestUtils.assertStatusException(
-        Status.INVALID_ARGUMENT, () -> authenticatedServiceStub().setBackupId(SetBackupIdRequest.newBuilder()
-            .setMessagesBackupAuthCredentialRequest(ByteString.copyFrom(messagesAuthCredRequest.serialize()))
-            .build())
-    );
-
-    // missing message credential
-    GrpcTestUtils.assertStatusException(
-        Status.INVALID_ARGUMENT, () -> authenticatedServiceStub().setBackupId(SetBackupIdRequest.newBuilder()
-            .setMediaBackupAuthCredentialRequest(ByteString.copyFrom(mediaAuthCredRequest.serialize()))
-            .build())
-    );
-
-    // missing all credentials
-    GrpcTestUtils.assertStatusException(
-        Status.INVALID_ARGUMENT, () -> authenticatedServiceStub().setBackupId(SetBackupIdRequest.newBuilder().build())
-    );
-
     // invalid serialization
     GrpcTestUtils.assertStatusException(
         Status.INVALID_ARGUMENT, () -> authenticatedServiceStub().setBackupId(
@@ -193,6 +195,7 @@ class BackupsGrpcServiceTest extends SimpleBaseGrpcTest<BackupsGrpcService, Back
   void getCredentials() {
     final Instant start = Instant.now().truncatedTo(ChronoUnit.DAYS);
     final Instant end = start.plus(Duration.ofDays(1));
+    final RedemptionRange expectedRange = RedemptionRange.inclusive(Clock.systemUTC(), start, end);
 
     final Map<BackupCredentialType, List<BackupAuthManager.Credential>> expectedCredentialsByType =
         EnumMapUtil.toEnumMap(BackupCredentialType.class, credentialType -> backupAuthTestUtil.getCredentials(
@@ -200,7 +203,7 @@ class BackupsGrpcServiceTest extends SimpleBaseGrpcTest<BackupsGrpcService, Back
             start, end));
 
     expectedCredentialsByType.forEach((credentialType, expectedCredentials) ->
-        when(backupAuthManager.getBackupAuthCredentials(any(), eq(credentialType), eq(start), eq(end)))
+        when(backupAuthManager.getBackupAuthCredentials(any(), eq(credentialType), eq(expectedRange)))
             .thenReturn(CompletableFuture.completedFuture(expectedCredentials)));
 
     final GetBackupAuthCredentialsResponse credentialResponse = authenticatedServiceStub().getBackupAuthCredentials(

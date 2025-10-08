@@ -45,6 +45,7 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
@@ -65,6 +66,7 @@ import org.signal.libsignal.zkgroup.backups.BackupCredentialType;
 import org.signal.libsignal.zkgroup.receipts.ReceiptCredentialPresentation;
 import org.whispersystems.textsecuregcm.auth.AuthenticatedDevice;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentials;
+import org.whispersystems.textsecuregcm.auth.RedemptionRange;
 import org.whispersystems.textsecuregcm.backup.BackupAuthManager;
 import org.whispersystems.textsecuregcm.backup.BackupManager;
 import org.whispersystems.textsecuregcm.backup.CopyParameters;
@@ -112,19 +114,20 @@ public class ArchiveController {
       @Schema(description = """
           A BackupAuthCredentialRequest containing a blinded encrypted backup-id, encoded in standard padded base64.
           This backup-id should be used for message backups only, and must have the message backup type set on the
-          credential.
+          credential. If absent, the message credential request will not be updated.
           """, implementation = String.class)
       @JsonDeserialize(using = BackupAuthCredentialAdapter.CredentialRequestDeserializer.class)
       @JsonSerialize(using = BackupAuthCredentialAdapter.CredentialRequestSerializer.class)
-      @NotNull BackupAuthCredentialRequest messagesBackupAuthCredentialRequest,
+      BackupAuthCredentialRequest messagesBackupAuthCredentialRequest,
 
       @Schema(description = """
           A BackupAuthCredentialRequest containing a blinded encrypted backup-id, encoded in standard padded base64.
-          This backup-id should be used for media only, and must have the media type set on the credential.
+          This backup-id should be used for media only, and must have the media type set on the credential. If absent,
+          only the media credential request will not be updated.
           """, implementation = String.class)
       @JsonDeserialize(using = BackupAuthCredentialAdapter.CredentialRequestDeserializer.class)
       @JsonSerialize(using = BackupAuthCredentialAdapter.CredentialRequestSerializer.class)
-      @NotNull BackupAuthCredentialRequest mediaBackupAuthCredentialRequest) {}
+      BackupAuthCredentialRequest mediaBackupAuthCredentialRequest) {}
 
 
   @PUT
@@ -134,11 +137,13 @@ public class ArchiveController {
   @Operation(
       summary = "Set backup id",
       description = """
-          Set a (blinded) backup-id for the account. Each account may have a single active backup-id that can be used
-          to store and retrieve backups. Once the backup-id is set, BackupAuthCredentials can be generated
-          using /v1/archives/auth.
+          Set (blinded) backup-id(s) for the account. Each account may have a single active backup-id for each
+          credential type that can be used to store and retrieve backups. Once the backup-id is set,
+          BackupAuthCredentials can be generated using /v1/archives/auth.
 
           The blinded backup-id and the key-pair used to blind it should be derived from a recoverable secret.
+          
+          At least one of `messagesBackupAuthCredentialRequest`, `mediaBackupAuthCredentialRequest` must be set.
           """)
   @ApiResponse(responseCode = "204", description = "The backup-id was set")
   @ApiResponse(responseCode = "400", description = "The provided backup auth credential request was invalid")
@@ -157,8 +162,9 @@ public class ArchiveController {
               .orElseThrow(() -> new WebApplicationException(Response.Status.UNAUTHORIZED));
 
           return backupAuthManager
-              .commitBackupId(account, device, setBackupIdRequest.messagesBackupAuthCredentialRequest,
-                  setBackupIdRequest.mediaBackupAuthCredentialRequest)
+              .commitBackupId(account, device,
+                  Optional.ofNullable(setBackupIdRequest.messagesBackupAuthCredentialRequest),
+                  Optional.ofNullable(setBackupIdRequest.mediaBackupAuthCredentialRequest))
               .thenApply(Util.ASYNC_EMPTY_RESPONSE);
         });
   }
@@ -309,6 +315,13 @@ public class ArchiveController {
     final Map<BackupCredentialType, List<BackupAuthCredentialsResponse.BackupAuthCredential>> credentialsByType =
         new ConcurrentHashMap<>();
 
+    final RedemptionRange redemptionRange;
+    try {
+      redemptionRange = RedemptionRange.inclusive(Clock.systemUTC(), Instant.ofEpochSecond(startSeconds), Instant.ofEpochSecond(endSeconds));
+    } catch (IllegalArgumentException e) {
+      throw new BadRequestException(e.getMessage());
+    }
+
     return accountsManager.getByAccountIdentifierAsync(authenticatedDevice.accountIdentifier())
         .thenCompose(maybeAccount -> {
           final Account account = maybeAccount
@@ -318,7 +331,7 @@ public class ArchiveController {
                   .map(credentialType -> this.backupAuthManager.getBackupAuthCredentials(
                           account,
                           credentialType,
-                          Instant.ofEpochSecond(startSeconds), Instant.ofEpochSecond(endSeconds))
+                          redemptionRange)
                       .thenAccept(credentials -> {
                         backupMetrics.updateGetCredentialCounter(
                             UserAgentTagUtil.getPlatformTag(userAgent),

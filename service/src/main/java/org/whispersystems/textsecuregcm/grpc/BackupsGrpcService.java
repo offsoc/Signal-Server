@@ -6,12 +6,12 @@ package org.whispersystems.textsecuregcm.grpc;
 
 import com.google.protobuf.ByteString;
 import io.grpc.Status;
+import io.micrometer.core.instrument.Tag;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
-import io.micrometer.core.instrument.Metrics;
-import io.micrometer.core.instrument.Tag;
-import io.micrometer.core.instrument.Tags;
 import org.signal.chat.backup.GetBackupAuthCredentialsRequest;
 import org.signal.chat.backup.GetBackupAuthCredentialsResponse;
 import org.signal.chat.backup.ReactorBackupsGrpc;
@@ -24,18 +24,16 @@ import org.signal.libsignal.zkgroup.InvalidInputException;
 import org.signal.libsignal.zkgroup.backups.BackupAuthCredentialRequest;
 import org.signal.libsignal.zkgroup.backups.BackupCredentialType;
 import org.signal.libsignal.zkgroup.receipts.ReceiptCredentialPresentation;
+import org.whispersystems.textsecuregcm.auth.RedemptionRange;
 import org.whispersystems.textsecuregcm.auth.grpc.AuthenticatedDevice;
 import org.whispersystems.textsecuregcm.auth.grpc.AuthenticationUtil;
 import org.whispersystems.textsecuregcm.backup.BackupAuthManager;
-import org.whispersystems.textsecuregcm.controllers.ArchiveController;
 import org.whispersystems.textsecuregcm.metrics.BackupMetrics;
 import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.Device;
 import reactor.core.publisher.Mono;
-
-import static org.whispersystems.textsecuregcm.metrics.MetricsUtil.name;
 
 public class BackupsGrpcService extends ReactorBackupsGrpc.BackupsImplBase {
 
@@ -49,17 +47,16 @@ public class BackupsGrpcService extends ReactorBackupsGrpc.BackupsImplBase {
     this.backupMetrics = backupMetrics;
   }
 
-
   @Override
   public Mono<SetBackupIdResponse> setBackupId(SetBackupIdRequest request) {
 
-    final BackupAuthCredentialRequest messagesCredentialRequest = deserialize(
+    final Optional<BackupAuthCredentialRequest> messagesCredentialRequest = deserializeWithEmptyPresenceCheck(
         BackupAuthCredentialRequest::new,
-        request.getMessagesBackupAuthCredentialRequest().toByteArray());
+        request.getMessagesBackupAuthCredentialRequest());
 
-    final BackupAuthCredentialRequest mediaCredentialRequest = deserialize(
+    final Optional<BackupAuthCredentialRequest> mediaCredentialRequest = deserializeWithEmptyPresenceCheck(
         BackupAuthCredentialRequest::new,
-        request.getMediaBackupAuthCredentialRequest().toByteArray());
+        request.getMediaBackupAuthCredentialRequest());
 
     final AuthenticatedDevice authenticatedDevice = AuthenticationUtil.requireAuthenticatedDevice();
     return authenticatedAccount()
@@ -85,14 +82,20 @@ public class BackupsGrpcService extends ReactorBackupsGrpc.BackupsImplBase {
   @Override
   public Mono<GetBackupAuthCredentialsResponse> getBackupAuthCredentials(GetBackupAuthCredentialsRequest request) {
     final Tag platformTag = UserAgentTagUtil.getPlatformTag(RequestAttributesUtil.getUserAgent().orElse(null));
+    final RedemptionRange redemptionRange;
+    try {
+      redemptionRange = RedemptionRange.inclusive(Clock.systemUTC(),
+          Instant.ofEpochSecond(request.getRedemptionStart()),
+          Instant.ofEpochSecond(request.getRedemptionStop()));
+    } catch (IllegalArgumentException e) {
+      throw Status.INVALID_ARGUMENT.withDescription(e.getMessage()).asRuntimeException();
+    }
     return authenticatedAccount().flatMap(account -> {
-
       final Mono<List<BackupAuthManager.Credential>> messageCredentials = Mono.fromCompletionStage(() ->
           backupAuthManager.getBackupAuthCredentials(
               account,
               BackupCredentialType.MESSAGES,
-              Instant.ofEpochSecond(request.getRedemptionStart()),
-              Instant.ofEpochSecond(request.getRedemptionStop())))
+              redemptionRange))
           .doOnSuccess(credentials ->
               backupMetrics.updateGetCredentialCounter(platformTag, BackupCredentialType.MESSAGES, credentials.size()));
 
@@ -100,8 +103,7 @@ public class BackupsGrpcService extends ReactorBackupsGrpc.BackupsImplBase {
           backupAuthManager.getBackupAuthCredentials(
               account,
               BackupCredentialType.MEDIA,
-              Instant.ofEpochSecond(request.getRedemptionStart()),
-              Instant.ofEpochSecond(request.getRedemptionStop())))
+              redemptionRange))
           .doOnSuccess(credentials ->
               backupMetrics.updateGetCredentialCounter(platformTag, BackupCredentialType.MEDIA, credentials.size()));
 
@@ -133,6 +135,13 @@ public class BackupsGrpcService extends ReactorBackupsGrpc.BackupsImplBase {
   private interface Deserializer<T> {
 
     T deserialize(byte[] bytes) throws InvalidInputException;
+  }
+
+  private <T> Optional<T> deserializeWithEmptyPresenceCheck(Deserializer<T> deserializer, ByteString byteString) {
+    if (byteString.isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(deserialize(deserializer, byteString.toByteArray()));
   }
 
   private <T> T deserialize(Deserializer<T> deserializer, byte[] bytes) {

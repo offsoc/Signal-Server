@@ -64,6 +64,7 @@ import org.signal.libsignal.zkgroup.receipts.ServerZkReceiptOperations;
 import org.whispersystems.textsecuregcm.auth.AuthenticatedBackupUser;
 import org.whispersystems.textsecuregcm.auth.AuthenticatedDevice;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentials;
+import org.whispersystems.textsecuregcm.auth.RedemptionRange;
 import org.whispersystems.textsecuregcm.backup.BackupAuthManager;
 import org.whispersystems.textsecuregcm.backup.BackupAuthTestUtil;
 import org.whispersystems.textsecuregcm.backup.BackupManager;
@@ -178,8 +179,27 @@ public class ArchiveControllerTest {
     assertThat(response.getStatus()).isEqualTo(204);
 
     verify(backupAuthManager).commitBackupId(AuthHelper.VALID_ACCOUNT, AuthHelper.VALID_DEVICE,
-        backupAuthTestUtil.getRequest(messagesBackupKey, aci),
-        backupAuthTestUtil.getRequest(mediaBackupKey, aci));
+        Optional.of(backupAuthTestUtil.getRequest(messagesBackupKey, aci)),
+        Optional.of(backupAuthTestUtil.getRequest(mediaBackupKey, aci)));
+  }
+
+  @Test
+  public void setBackupIdPartial() {
+    when(backupAuthManager.commitBackupId(any(), any(), any(), any())).thenReturn(CompletableFuture.completedFuture(null));
+
+    final Response response = resources.getJerseyTest()
+        .target("v1/archives/backupid")
+        .request()
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
+        .put(Entity.json("""
+            {"messagesBackupAuthCredentialRequest": "%s"}
+            """.formatted(Base64.getEncoder().encodeToString(backupAuthTestUtil.getRequest(messagesBackupKey, aci).serialize()))));
+
+    assertThat(response.getStatus()).isEqualTo(204);
+
+    verify(backupAuthManager).commitBackupId(AuthHelper.VALID_ACCOUNT, AuthHelper.VALID_DEVICE,
+        Optional.of(backupAuthTestUtil.getRequest(messagesBackupKey, aci)),
+        Optional.empty());
   }
 
   @ParameterizedTest
@@ -278,7 +298,6 @@ public class ArchiveControllerTest {
 
   @ParameterizedTest
   @CsvSource(textBlock = """
-      {}, 422
       '{"messagesBackupAuthCredentialRequest": "aaa", "mediaBackupAuthCredentialRequest": "aaa"}', 400
       '{"messagesBackupAuthCredentialRequest": "", "mediaBackupAuthCredentialRequest": ""}', 400
       """)
@@ -322,14 +341,15 @@ public class ArchiveControllerTest {
   public void getCredentials() {
     final Instant start = Instant.now().truncatedTo(ChronoUnit.DAYS);
     final Instant end = start.plus(Duration.ofDays(1));
+    final RedemptionRange expectedRange = RedemptionRange.inclusive(Clock.systemUTC(), start, end);
 
     final Map<BackupCredentialType, List<BackupAuthManager.Credential>> expectedCredentialsByType =
         EnumMapUtil.toEnumMap(BackupCredentialType.class, credentialType -> backupAuthTestUtil.getCredentials(
             BackupLevel.PAID, backupAuthTestUtil.getRequest(messagesBackupKey, aci), credentialType, start, end));
 
     expectedCredentialsByType.forEach((credentialType, expectedCredentials) ->
-        when(backupAuthManager.getBackupAuthCredentials(any(), eq(credentialType), eq(start), eq(end))).thenReturn(
-        CompletableFuture.completedFuture(expectedCredentials)));
+        when(backupAuthManager.getBackupAuthCredentials(any(), eq(credentialType), eq(expectedRange)))
+            .thenReturn(CompletableFuture.completedFuture(expectedCredentials)));
 
     final ArchiveController.BackupAuthCredentialsResponse credentialResponse = resources.getJerseyTest()
         .target("v1/archives/auth")
