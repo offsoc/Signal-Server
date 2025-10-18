@@ -1391,6 +1391,40 @@ paths:
           description: Ratelimited.
       security:
       - authenticatedAccount: []
+  /v1/call_quality_survey:
+    put:
+      tags:
+      - Account
+      summary: Submit survey response
+      description: Submits a call quality survey response
+      operationId: submitCallQualitySurvey
+      parameters:
+      - name: User-Agent
+        in: header
+        schema:
+          type: string
+      requestBody:
+        description: A serialized survey response protobuf entity
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: byte
+      responses:
+        "204":
+          description: The survey response was submitted successfully
+        "422":
+          description: The survey response could not be parsed
+        "429":
+          description: Too many attempts
+          headers:
+            Retry-After:
+              description: "If present, an positive integer indicating the number\
+                \ of seconds before a subsequent attempt could succeed"
+              style: simple
+      security:
+      - authenticatedAccount: []
+      - {}
   /v2/calling/relays:
     get:
       tags:
@@ -2422,15 +2456,15 @@ paths:
               schema:
                 type: object
                 properties:
-                  done:
-                    type: boolean
-                  cancelled:
-                    type: boolean
                   completedExceptionally:
                     type: boolean
                   numberOfDependents:
                     type: integer
                     format: int32
+                  done:
+                    type: boolean
+                  cancelled:
+                    type: boolean
       security:
       - authenticatedAccount: []
   /v1/messages/uuid/{uuid}:
@@ -2667,15 +2701,15 @@ paths:
               schema:
                 type: object
                 properties:
-                  done:
-                    type: boolean
-                  cancelled:
-                    type: boolean
                   completedExceptionally:
                     type: boolean
                   numberOfDependents:
                     type: integer
                     format: int32
+                  done:
+                    type: boolean
+                  cancelled:
+                    type: boolean
       security:
       - authenticatedAccount: []
       - {}
@@ -2758,15 +2792,15 @@ paths:
               schema:
                 type: object
                 properties:
-                  done:
-                    type: boolean
-                  cancelled:
-                    type: boolean
                   completedExceptionally:
                     type: boolean
                   numberOfDependents:
                     type: integer
                     format: int32
+                  done:
+                    type: boolean
+                  cancelled:
+                    type: boolean
       security:
       - authenticatedAccount: []
       - {}
@@ -2794,15 +2828,15 @@ paths:
               schema:
                 type: object
                 properties:
-                  done:
-                    type: boolean
-                  cancelled:
-                    type: boolean
                   completedExceptionally:
                     type: boolean
                   numberOfDependents:
                     type: integer
                     format: int32
+                  done:
+                    type: boolean
+                  cancelled:
+                    type: boolean
       security:
       - authenticatedAccount: []
       - {}
