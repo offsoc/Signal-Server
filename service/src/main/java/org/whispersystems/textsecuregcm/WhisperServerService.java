@@ -73,6 +73,8 @@ import org.signal.libsignal.zkgroup.receipts.ReceiptCredentialPresentation;
 import org.signal.libsignal.zkgroup.receipts.ServerZkReceiptOperations;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.whispersystems.textsecuregcm.asn.AsnInfoProvider;
+import org.whispersystems.textsecuregcm.asn.AsnInfoProviderImpl;
 import org.whispersystems.textsecuregcm.attachments.GcsAttachmentGenerator;
 import org.whispersystems.textsecuregcm.attachments.TusAttachmentGenerator;
 import org.whispersystems.textsecuregcm.auth.AccountAuthenticator;
@@ -105,6 +107,7 @@ import org.whispersystems.textsecuregcm.controllers.AccountControllerV2;
 import org.whispersystems.textsecuregcm.controllers.ArchiveController;
 import org.whispersystems.textsecuregcm.controllers.AttachmentControllerV4;
 import org.whispersystems.textsecuregcm.controllers.CallLinkController;
+import org.whispersystems.textsecuregcm.controllers.CallQualitySurveyController;
 import org.whispersystems.textsecuregcm.controllers.CallRoutingControllerV2;
 import org.whispersystems.textsecuregcm.controllers.CertificateController;
 import org.whispersystems.textsecuregcm.controllers.ChallengeController;
@@ -140,6 +143,7 @@ import org.whispersystems.textsecuregcm.filters.RestDeprecationFilter;
 import org.whispersystems.textsecuregcm.filters.TimestampResponseFilter;
 import org.whispersystems.textsecuregcm.grpc.AccountsAnonymousGrpcService;
 import org.whispersystems.textsecuregcm.grpc.AccountsGrpcService;
+import org.whispersystems.textsecuregcm.grpc.CallQualitySurveyGrpcService;
 import org.whispersystems.textsecuregcm.grpc.ErrorMappingInterceptor;
 import org.whispersystems.textsecuregcm.grpc.ExternalServiceCredentialsAnonymousGrpcService;
 import org.whispersystems.textsecuregcm.grpc.ExternalServiceCredentialsGrpcService;
@@ -177,6 +181,7 @@ import org.whispersystems.textsecuregcm.mappers.RegistrationServiceSenderExcepti
 import org.whispersystems.textsecuregcm.mappers.ServerRejectedExceptionMapper;
 import org.whispersystems.textsecuregcm.mappers.SubscriptionExceptionMapper;
 import org.whispersystems.textsecuregcm.metrics.BackupMetrics;
+import org.whispersystems.textsecuregcm.metrics.CallQualitySurveyManager;
 import org.whispersystems.textsecuregcm.metrics.MessageMetrics;
 import org.whispersystems.textsecuregcm.metrics.MetricsApplicationEventListener;
 import org.whispersystems.textsecuregcm.metrics.MetricsHttpChannelListener;
@@ -200,6 +205,7 @@ import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClusterClient;
 import org.whispersystems.textsecuregcm.registration.RegistrationServiceClient;
 import org.whispersystems.textsecuregcm.s3.PolicySigner;
 import org.whispersystems.textsecuregcm.s3.PostPolicyGenerator;
+import org.whispersystems.textsecuregcm.s3.S3MonitoringSupplier;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
 import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecoveryClient;
 import org.whispersystems.textsecuregcm.spam.ChallengeConstraintChecker;
@@ -579,6 +585,10 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         "disconnectionRequest",
         config.getVirtualThreadConfiguration().maxConcurrentThreadsPerExecutor(),
         environment);
+    ExecutorService callQualitySurveyPubSubExecutor = ManagedExecutors.newVirtualThreadPerTaskExecutor(
+        "callQualitySurvey",
+        config.getVirtualThreadConfiguration().maxConcurrentThreadsPerExecutor(),
+        environment);
 
     ScheduledExecutorService cloudflareTurnRetryExecutor = ScheduledExecutorServiceBuilder.of(environment, "cloudflareTurnRetry").threads(1).build();
     ScheduledExecutorService messagePollExecutor = ScheduledExecutorServiceBuilder.of(environment, "messagePollExecutor").threads(1).build();
@@ -602,6 +612,14 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         config.getSvr2Configuration());
     ExternalServiceCredentialsGenerator svrbCredentialsGenerator =
         SecureValueRecoveryBCredentialsGeneratorFactory.svrbCredentialsGenerator(config.getSvrbConfiguration());
+
+    final S3MonitoringSupplier<AsnInfoProvider> asnInfoProviderSupplier = new S3MonitoringSupplier<>(
+        recurringJobExecutor,
+        awsCredentialsProvider,
+        config.getAsnTableConfiguration(),
+        AsnInfoProviderImpl::fromTsvGz,
+        AsnInfoProvider.EMPTY,
+        "AsnManager");
 
     RegistrationRecoveryPasswordsManager registrationRecoveryPasswordsManager =
         new RegistrationRecoveryPasswordsManager(registrationRecoveryPasswords);
@@ -679,6 +697,10 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         config.getDynamoDbTables().getSubscriptions().getTableName(), dynamoDbAsyncClient);
     MessageDeliveryLoopMonitor messageDeliveryLoopMonitor =
         config.logMessageDeliveryLoops() ? new RedisMessageDeliveryLoopMonitor(rateLimitersCluster) : new NoopMessageDeliveryLoopMonitor();
+    CallQualitySurveyManager callQualitySurveyManager = new CallQualitySurveyManager(asnInfoProviderSupplier,
+        config.getCallQualitySurveyConfiguration().pubSubPublisher().build(),
+        Clock.systemUTC(),
+        callQualitySurveyPubSubExecutor);
 
     final RegistrationLockVerificationManager registrationLockVerificationManager = new RegistrationLockVerificationManager(
         accountsManager, disconnectionRequestManager, svr2CredentialsGenerator, registrationRecoveryPasswordsManager,
@@ -749,6 +771,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         config.getAppleAppStore().productIdToLevel(),
         config.getAppleAppStore().appleRootCerts(),
         config.getAppleAppStore().retryConfigurationName());
+
+    environment.lifecycle().manage(asnInfoProviderSupplier);
 
     environment.lifecycle().manage(apnSender);
     environment.lifecycle().manage(pushNotificationScheduler);
@@ -853,6 +877,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
 
     final List<ServerServiceDefinition> unauthenticatedServices = Stream.of(
             new AccountsAnonymousGrpcService(accountsManager, rateLimiters),
+            new CallQualitySurveyGrpcService(callQualitySurveyManager, rateLimiters),
             new KeysAnonymousGrpcService(accountsManager, keysManager, zkSecretParams, Clock.systemUTC()),
             new PaymentsGrpcService(currencyManager),
             ExternalServiceCredentialsAnonymousGrpcService.create(accountsManager, config),
@@ -1030,6 +1055,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new ArchiveController(accountsManager, backupAuthManager, backupManager, backupMetrics),
         new CallRoutingControllerV2(rateLimiters, cloudflareTurnCredentialsManager),
         new CallLinkController(rateLimiters, callingGenericZkSecretParams),
+        new CallQualitySurveyController(callQualitySurveyManager),
         new CertificateController(accountsManager, new CertificateGenerator(config.getDeliveryCertificate().certificate(),
             config.getDeliveryCertificate().ecPrivateKey(), config.getDeliveryCertificate().expiresDays()),
             zkAuthOperations, callingGenericZkSecretParams, clock),
