@@ -42,7 +42,6 @@
     <commons-csv.version>1.14.1</commons-csv.version>
     <commons-io.version>2.20.0</commons-io.version>
     <dropwizard.version>4.0.16</dropwizard.version>
-    <dropwizard-metrics-datadog.version>1.1.14</dropwizard-metrics-datadog.version>
     <!-- Note: when updating FoundationDB, also include a copy of `libfdb_c.so` from the FoundationDB release at
     src/main/jib/usr/lib/libfdb_c.so. We use x86_64 builds without AVX instructions enabled (i.e. FoundationDB versions
     with even-numbered patch versions). Also when updating FoundationDB, make sure to update the version of FoundationDB
@@ -230,11 +229,6 @@
         <groupId>org.apache.commons</groupId>
         <artifactId>commons-csv</artifactId>
         <version>${commons-csv.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.coursera</groupId>
-        <artifactId>dropwizard-metrics-datadog</artifactId>
-        <version>${dropwizard-metrics-datadog.version}</version>
       </dependency>
       <dependency>
         <groupId>org.foundationdb</groupId>

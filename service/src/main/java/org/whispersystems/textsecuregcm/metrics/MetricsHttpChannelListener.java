@@ -143,14 +143,19 @@ public class MetricsHttpChannelListener implements HttpChannel.Listener, Contain
     tags.add(Tag.of(TRAFFIC_SOURCE_TAG, TrafficSource.HTTP.name().toLowerCase()));
     tags.addAll(UserAgentTagUtil.getLibsignalAndPlatformTags(requestInfo.userAgent()));
 
+    final Optional<Tag> maybeClientVersionTag =
+        UserAgentTagUtil.getClientVersionTag(requestInfo.userAgent, clientReleaseManager);
+
+    maybeClientVersionTag.ifPresent(tags::add);
+
     meterRegistry.counter(REQUEST_COUNTER_NAME, tags).increment();
 
     meterRegistry.counter(RESPONSE_BYTES_COUNTER_NAME, tags).increment(request.getResponse().getContentCount());
     meterRegistry.counter(REQUEST_BYTES_COUNTER_NAME, tags).increment(request.getContentRead());
 
-    UserAgentTagUtil.getClientVersionTag(requestInfo.userAgent(), clientReleaseManager).ifPresent(
-        clientVersionTag -> meterRegistry.counter(REQUESTS_BY_VERSION_COUNTER_NAME,
-            Tags.of(clientVersionTag, UserAgentTagUtil.getPlatformTag(requestInfo.userAgent()))).increment());
+    maybeClientVersionTag.ifPresent(clientVersionTag -> meterRegistry.counter(REQUESTS_BY_VERSION_COUNTER_NAME,
+            Tags.of(clientVersionTag, UserAgentTagUtil.getPlatformTag(requestInfo.userAgent)))
+        .increment());
   }
 
   @Override

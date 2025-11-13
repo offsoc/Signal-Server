@@ -4,7 +4,7 @@
  */
 package org.whispersystems.textsecuregcm;
 
-import static com.codahale.metrics.MetricRegistry.name;
+import static org.whispersystems.textsecuregcm.metrics.MetricsUtil.name;
 import static java.util.Objects.requireNonNull;
 
 import com.google.common.collect.Lists;
@@ -60,7 +60,7 @@ import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.function.Function;
 import java.util.stream.Stream;
-import org.eclipse.jetty.websocket.core.WebSocketComponents;
+import org.eclipse.jetty.websocket.core.WebSocketExtensionRegistry;
 import org.eclipse.jetty.websocket.core.server.WebSocketServerComponents;
 import org.eclipse.jetty.websocket.server.config.JettyWebSocketServletContainerInitializer;
 import org.glassfish.jersey.server.ServerProperties;
@@ -269,6 +269,7 @@ import org.whispersystems.textsecuregcm.util.VirtualThreadPinEventMonitor;
 import org.whispersystems.textsecuregcm.util.logging.LoggingUnhandledExceptionMapper;
 import org.whispersystems.textsecuregcm.util.logging.UncaughtExceptionHandler;
 import org.whispersystems.textsecuregcm.websocket.AuthenticatedConnectListener;
+import org.whispersystems.textsecuregcm.websocket.NoContextTakeoverPerMessageDeflateExtension;
 import org.whispersystems.textsecuregcm.websocket.ProvisioningConnectListener;
 import org.whispersystems.textsecuregcm.websocket.WebSocketAccountAuthenticator;
 import org.whispersystems.textsecuregcm.workers.BackupMetricsCommand;
@@ -596,6 +597,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     ScheduledExecutorService cloudflareTurnRetryExecutor = ScheduledExecutorServiceBuilder.of(environment, "cloudflareTurnRetry").threads(1).build();
     ScheduledExecutorService messagePollExecutor = ScheduledExecutorServiceBuilder.of(environment, "messagePollExecutor").threads(1).build();
     ScheduledExecutorService provisioningWebsocketTimeoutExecutor = ScheduledExecutorServiceBuilder.of(environment, "provisioningWebsocketTimeout").threads(1).build();
+    ScheduledExecutorService jmxDumper = ScheduledExecutorServiceBuilder.of(environment, "jmxDumper").threads(1).build();
 
     final ManagedNioEventLoopGroup dnsResolutionEventLoopGroup = new ManagedNioEventLoopGroup();
     final DnsNameResolver cloudflareDnsResolver = new DnsNameResolverBuilder(dnsResolutionEventLoopGroup.next())
@@ -1131,10 +1133,14 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     provisioningEnvironment.jersey().property(ServerProperties.UNWRAP_COMPLETION_STAGE_IN_WRITER_ENABLE, Boolean.TRUE);
 
     JettyWebSocketServletContainerInitializer.configure(environment.getApplicationContext(), (context, container) -> {
+      final WebSocketExtensionRegistry extensionRegistry = WebSocketServerComponents
+          .getWebSocketComponents(environment.getApplicationContext().getServletContext())
+          .getExtensionRegistry();
       if (config.getWebSocketConfiguration().isDisablePerMessageDeflate()) {
-        WebSocketComponents components =
-            WebSocketServerComponents.getWebSocketComponents(environment.getApplicationContext().getServletContext());
-        components.getExtensionRegistry().unregister("permessage-deflate");
+        extensionRegistry.unregister("permessage-deflate");
+      } else if (config.getWebSocketConfiguration().isDisableCrossMessageOutgoingCompression()) {
+        extensionRegistry.unregister("permessage-deflate");
+        extensionRegistry.register("permessage-deflate", NoContextTakeoverPerMessageDeflateExtension.class);
       }
     });
 
@@ -1155,6 +1161,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     provisioning.setAsyncSupported(true);
 
     environment.admin().addTask(new SetRequestLoggingEnabledTask());
+
   }
 
   private void registerExceptionMappers(Environment environment,
@@ -1183,7 +1190,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     });
   }
 
-  private static class ExecutorServiceBuilder extends io.dropwizard.lifecycle.setup.ExecutorServiceBuilder {
+  public static class ExecutorServiceBuilder extends io.dropwizard.lifecycle.setup.ExecutorServiceBuilder {
     private final String baseName;
 
     public ExecutorServiceBuilder(final LifecycleEnvironment environment, final String baseName) {
@@ -1201,7 +1208,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     }
   }
 
-  private static class ScheduledExecutorServiceBuilder extends io.dropwizard.lifecycle.setup.ScheduledExecutorServiceBuilder {
+  public static class ScheduledExecutorServiceBuilder extends io.dropwizard.lifecycle.setup.ScheduledExecutorServiceBuilder {
     private final String baseName;
 
     public ScheduledExecutorServiceBuilder(final LifecycleEnvironment environment, final String baseName) {
