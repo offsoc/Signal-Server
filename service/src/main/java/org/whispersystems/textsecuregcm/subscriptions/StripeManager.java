@@ -6,7 +6,6 @@
 package org.whispersystems.textsecuregcm.subscriptions;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.stripe.Stripe;
 import com.stripe.StripeClient;
@@ -18,6 +17,7 @@ import com.stripe.model.Charge;
 import com.stripe.model.Customer;
 import com.stripe.model.Invoice;
 import com.stripe.model.InvoiceLineItem;
+import com.stripe.model.InvoicePayment;
 import com.stripe.model.PaymentIntent;
 import com.stripe.model.Price;
 import com.stripe.model.Product;
@@ -26,11 +26,11 @@ import com.stripe.model.StripeCollection;
 import com.stripe.model.Subscription;
 import com.stripe.model.SubscriptionItem;
 import com.stripe.net.RequestOptions;
+import com.stripe.param.ChargeRetrieveParams;
 import com.stripe.param.CustomerCreateParams;
 import com.stripe.param.CustomerRetrieveParams;
 import com.stripe.param.CustomerUpdateParams;
 import com.stripe.param.CustomerUpdateParams.InvoiceSettings;
-import com.stripe.param.InvoiceListParams;
 import com.stripe.param.PaymentIntentCreateParams;
 import com.stripe.param.PaymentIntentRetrieveParams;
 import com.stripe.param.PriceRetrieveParams;
@@ -49,7 +49,6 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -61,6 +60,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -117,7 +117,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
       @Nonnull Map<PaymentMethod, Set<String>> supportedCurrenciesByPaymentMethod) {
     this(new StripeClient(apiKey), executor, idempotencyKeyGenerator, boostDescription, supportedCurrenciesByPaymentMethod);
 
-    if (Strings.isNullOrEmpty(apiKey)) {
+    if (StringUtils.isEmpty(apiKey)) {
       throw new IllegalArgumentException("apiKey cannot be empty");
     }
   }
@@ -154,7 +154,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
     }
 
     try {
-      final Customer customer = stripeClient.customers()
+      final Customer customer = stripeClient.v1().customers()
           .create(builder.build(), commonOptions(generateIdempotencyKeyForSubscriberUser(subscriberUser)));
       return new ProcessorCustomer(customer.getId(), getProvider());
     } catch (StripeException e) {
@@ -165,7 +165,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
   public Customer getCustomer(String customerId) {
     CustomerRetrieveParams params = CustomerRetrieveParams.builder().build();
     try {
-      return stripeClient.customers().retrieve(customerId, params, commonOptions());
+      return stripeClient.v1().customers().retrieve(customerId, params, commonOptions());
     } catch (StripeException e) {
       throw new UncheckedIOException(new IOException(e));
     }
@@ -180,7 +180,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
               .build())
           .build();
       try {
-        stripeClient.customers().update(customerId, params, commonOptions());
+        stripeClient.v1().customers().update(customerId, params, commonOptions());
       } catch (InvalidRequestException e) {
         // Could happen if the paymentMethodId was bunk or the client didn't actually finish setting it up
         throw new SubscriptionInvalidArgumentsException(e.getMessage());
@@ -195,7 +195,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
         .setCustomer(customerId)
         .build();
     try {
-      return stripeClient.setupIntents().create(params, commonOptions()).getClientSecret();
+      return stripeClient.v1().setupIntents().create(params, commonOptions()).getClientSecret();
     } catch (StripeException e) {
       throw new UncheckedIOException(new IOException(e));
     }
@@ -228,7 +228,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
       }
 
       try {
-        return stripeClient.paymentIntents().create(builder.build(), commonOptions());
+        return stripeClient.v1().paymentIntents().create(builder.build(), commonOptions());
       } catch (StripeException e) {
         final String errorCode = StringUtils.lowerCase(e.getCode(), Locale.ROOT);
         switch (errorCode) {
@@ -243,9 +243,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
   public CompletableFuture<PaymentDetails> getPaymentDetails(String paymentIntentId) {
     return CompletableFuture.supplyAsync(() -> {
       try {
-        final PaymentIntentRetrieveParams params = PaymentIntentRetrieveParams.builder()
-            .addExpand("latest_charge").build();
-        final PaymentIntent paymentIntent = stripeClient.paymentIntents().retrieve(paymentIntentId, params, commonOptions());
+        final PaymentIntent paymentIntent = getPaymentIntent(paymentIntentId);
 
         ChargeFailure chargeFailure = null;
         if (paymentIntent.getLatestChargeObject() != null) {
@@ -302,7 +300,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
       //
       // If the client tells the server several times in a row before the initial creation of a subscription to
       // create a subscription, we want to ensure only one gets created.
-      final Subscription subscription = stripeClient.subscriptions().create(
+      final Subscription subscription = stripeClient.v1().subscriptions().create(
           params,
           commonOptions(generateIdempotencyKeyForCreateSubscription(customerId, lastSubscriptionCreatedAt)));
       return new SubscriptionId(subscription.getId());
@@ -332,7 +330,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
 
     List<SubscriptionUpdateParams.Item> items = new ArrayList<>();
     try {
-      final StripeCollection<SubscriptionItem> subscriptionItems = stripeClient.subscriptionItems()
+      final StripeCollection<SubscriptionItem> subscriptionItems = stripeClient.v1().subscriptionItems()
           .list(SubscriptionItemListParams.builder().setSubscription(subscription.getId()).build(),
               commonOptions());
       for (final SubscriptionItem item : subscriptionItems.autoPagingIterable()) {
@@ -355,7 +353,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
           .setPaymentBehavior(SubscriptionUpdateParams.PaymentBehavior.ERROR_IF_INCOMPLETE)
           .addAllItem(items)
           .build();
-      final Subscription subscription1 = stripeClient.subscriptions().update(subscription.getId(), params,
+      final Subscription subscription1 = stripeClient.v1().subscriptions().update(subscription.getId(), params,
           commonOptions(generateIdempotencyKeyForSubscriptionUpdate(subscription.getCustomer(), idempotencyKey)));
       return new SubscriptionId(subscription1.getId());
     } catch (IdempotencyException e) {
@@ -367,14 +365,32 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
     }
   }
 
+  /// Retrieves the subscription object with `latest_invoice.payments` expanded
   @Override
   public Object getSubscription(String subscriptionId) {
     SubscriptionRetrieveParams params = SubscriptionRetrieveParams.builder()
-        .addExpand("latest_invoice")
-        .addExpand("latest_invoice.charge")
+        .addExpand("latest_invoice.payments")
         .build();
     try {
-      return stripeClient.subscriptions().retrieve(subscriptionId, params, commonOptions());
+      return stripeClient.v1().subscriptions().retrieve(subscriptionId, params, commonOptions());
+    } catch (StripeException e) {
+      throw new UncheckedIOException(new IOException(e));
+    }
+  }
+
+  /// Retrieves the payment intent object with `latest_charge` expanded
+  public PaymentIntent getPaymentIntent(String paymentIntentId) throws StripeException {
+    PaymentIntentRetrieveParams params = PaymentIntentRetrieveParams.builder()
+        .addExpand("latest_charge")
+        .build();
+    return stripeClient.v1().paymentIntents().retrieve(paymentIntentId, params, commonOptions());
+  }
+
+  public Charge getCharge(String chargeId) {
+    ChargeRetrieveParams params = ChargeRetrieveParams.builder()
+        .build();
+    try {
+      return stripeClient.v1().charges().retrieve(chargeId, params, commonOptions());
     } catch (StripeException e) {
       throw new UncheckedIOException(new IOException(e));
     }
@@ -409,7 +425,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
         .build();
     try {
       return Lists.newArrayList(
-          stripeClient.subscriptions().list(params, commonOptions()).autoPagingIterable());
+          stripeClient.v1().subscriptions().list(params, commonOptions()).autoPagingIterable());
     } catch (StripeException e) {
       throw new UncheckedIOException(new IOException(e));
     }
@@ -430,7 +446,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
   private Subscription cancelSubscriptionImmediately(Subscription subscription) {
     SubscriptionCancelParams params = SubscriptionCancelParams.builder().build();
     try {
-      return stripeClient.subscriptions().cancel(subscription.getId(), params, commonOptions());
+      return stripeClient.v1().subscriptions().cancel(subscription.getId(), params, commonOptions());
     } catch (StripeException e) {
       throw new UncheckedIOException(new IOException(e));
     }
@@ -441,7 +457,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
         .setCancelAtPeriodEnd(true)
         .build();
     try {
-      return stripeClient.subscriptions().update(subscription.getId(), params, commonOptions());
+      return stripeClient.v1().subscriptions().update(subscription.getId(), params, commonOptions());
     } catch (StripeException e) {
       throw new UncheckedIOException(new IOException(e));
     }
@@ -449,7 +465,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
 
   public Collection<SubscriptionItem> getItemsForSubscription(Subscription subscription) {
     try {
-      final StripeCollection<SubscriptionItem> subscriptionItems = stripeClient.subscriptionItems().list(
+      final StripeCollection<SubscriptionItem> subscriptionItems = stripeClient.v1().subscriptionItems().list(
           SubscriptionItemListParams.builder().setSubscription(subscription.getId()).build(), commonOptions());
       return Lists.newArrayList(subscriptionItems.autoPagingIterable());
 
@@ -491,7 +507,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
   public Product getProductForPrice(String priceId) {
     PriceRetrieveParams params = PriceRetrieveParams.builder().addExpand("product").build();
     try {
-      return stripeClient.prices().retrieve(priceId, params, commonOptions()).getProductObject();
+      return stripeClient.v1().prices().retrieve(priceId, params, commonOptions()).getProductObject();
     } catch (StripeException e) {
       throw new UncheckedIOException(new IOException(e));
     }
@@ -499,28 +515,6 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
 
   public long getLevelForProduct(Product product) {
     return Long.parseLong(product.getMetadata().get(METADATA_KEY_LEVEL));
-  }
-
-  /**
-   * Returns the paid invoices within the past 90 days for a subscription ordered by the creation date in descending
-   * order (latest first).
-   */
-  public Collection<Invoice> getPaidInvoicesForSubscription(String subscriptionId, Instant now) {
-    InvoiceListParams params = InvoiceListParams.builder()
-        .setSubscription(subscriptionId)
-        .setStatus(InvoiceListParams.Status.PAID)
-        .setCreated(InvoiceListParams.Created.builder()
-            .setGte(now.minus(Duration.ofDays(90)).getEpochSecond())
-            .build())
-        .build();
-    try {
-      ArrayList<Invoice> invoices = Lists.newArrayList(stripeClient.invoices().list(params, commonOptions())
-          .autoPagingIterable());
-      invoices.sort(Comparator.comparingLong(Invoice::getCreated).reversed());
-      return invoices;
-    } catch (StripeException e) {
-      throw new UncheckedIOException(new IOException(e));
-    }
   }
 
   private static ChargeFailure createChargeFailure(final Charge charge) {
@@ -557,15 +551,21 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
       final Invoice invoice = subscription.getLatestInvoiceObject();
       paymentProcessing = "open".equals(invoice.getStatus());
 
-      if (invoice.getChargeObject() != null) {
-        final Charge charge = invoice.getChargeObject();
-        if (charge.getFailureCode() != null || charge.getFailureMessage() != null) {
-          chargeFailure = createChargeFailure(charge);
-        }
+      final Optional<InvoicePayment> latestInvoicePayment = getMostRecentInvoicePayment(invoice);
 
-        if (charge.getPaymentMethodDetails() != null
-            && charge.getPaymentMethodDetails().getType() != null) {
-          paymentMethod = getPaymentMethodFromStripeString(charge.getPaymentMethodDetails().getType(), invoice.getId());
+      if (latestInvoicePayment.isPresent()) {
+        final Optional<Charge> maybeCharge = getChargeForInvoicePayment(latestInvoicePayment.get());
+
+        if (maybeCharge.isPresent()) {
+          final Charge charge = maybeCharge.get();
+          if (charge.getFailureCode() != null || charge.getFailureMessage() != null) {
+            chargeFailure = createChargeFailure(charge);
+          }
+
+          if (charge.getPaymentMethodDetails() != null
+              && charge.getPaymentMethodDetails().getType() != null) {
+            paymentMethod = getPaymentMethodFromStripeString(charge.getPaymentMethodDetails().getType(), invoice.getId());
+          }
         }
       }
     }
@@ -574,7 +574,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
         new SubscriptionPrice(price.getCurrency().toUpperCase(Locale.ROOT), price.getUnitAmountDecimal()),
         level,
         Instant.ofEpochSecond(subscription.getBillingCycleAnchor()),
-        Instant.ofEpochSecond(subscription.getCurrentPeriodEnd()),
+        Instant.ofEpochSecond(subscription.getItems().getData().getFirst().getCurrentPeriodEnd()),
         Objects.equals(subscription.getStatus(), "active"),
         subscription.getCancelAtPeriodEnd(),
         getSubscriptionStatus(subscription.getStatus()),
@@ -616,23 +616,33 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
     if (latestSubscriptionInvoice == null) {
       throw new SubscriptionReceiptRequestedForOpenPaymentException();
     }
-    if (StringUtils.equalsIgnoreCase("open", latestSubscriptionInvoice.getStatus())) {
+    if ("open".equalsIgnoreCase(latestSubscriptionInvoice.getStatus())) {
       throw new SubscriptionReceiptRequestedForOpenPaymentException();
     }
-    if (!StringUtils.equalsIgnoreCase("paid", latestSubscriptionInvoice.getStatus())) {
-      final Charge charge = latestSubscriptionInvoice.getChargeObject();
-      if (charge != null && (charge.getFailureCode() != null || charge.getFailureMessage() != null)) {
-        // If the charge object has a failure reason we can present to the user, create a detailed exception
-        throw new SubscriptionChargeFailurePaymentRequiredException(getProvider(), createChargeFailure(charge));
-      } else {
-        // Otherwise, return a generic payment required error
-        throw new SubscriptionPaymentRequiredException();
-      }
+    if (!"paid".equalsIgnoreCase(latestSubscriptionInvoice.getStatus())) {
+
+      final Optional<InvoicePayment> latestInvoicePayment = getMostRecentInvoicePayment(latestSubscriptionInvoice);
+
+      final SubscriptionPaymentRequiredException exception = latestInvoicePayment.map(invoicePayment -> {
+
+            final Optional<Charge> maybeCharge = getChargeForInvoicePayment(invoicePayment);
+
+            return maybeCharge.filter(charge -> charge.getFailureCode() != null || charge.getFailureMessage() != null)
+                .map(charge -> {
+                  // If the charge object has a failure reason we can present to the user, create a detailed exception
+                  return (SubscriptionPaymentRequiredException) (new SubscriptionChargeFailurePaymentRequiredException(
+                      getProvider(), createChargeFailure(charge)));
+                })
+                .orElseGet(SubscriptionPaymentRequiredException::new);
+          })
+          .orElseGet(SubscriptionPaymentRequiredException::new);
+
+      throw exception;
     }
 
     final Collection<InvoiceLineItem> invoiceLineItems = getInvoiceLineItemsForInvoice(latestSubscriptionInvoice);
     Collection<InvoiceLineItem> subscriptionLineItems = invoiceLineItems.stream()
-        .filter(invoiceLineItem -> Objects.equals("subscription", invoiceLineItem.getType()))
+        .filter(invoiceLineItem -> "subscription_item_details".equalsIgnoreCase(invoiceLineItem.getParent().getType()))
         .toList();
     if (subscriptionLineItems.isEmpty()) {
       throw new IllegalStateException("latest subscription invoice has no subscription line items; subscriptionId="
@@ -657,7 +667,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
           invoice.getId());
       paidAt = Instant.ofEpochSecond(subscriptionLineItem.getPeriod().getStart());
     }
-    final Product product = getProductForPrice(subscriptionLineItem.getPrice().getId());
+    final Product product = getProductForPrice(subscriptionLineItem.getPricing().getPriceDetails().getPrice());
     return new ReceiptItem(
         subscriptionLineItem.getId(),
         PaymentTime.periodStart(paidAt),
@@ -666,7 +676,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
 
   public Collection<InvoiceLineItem> getInvoiceLineItemsForInvoice(Invoice invoice) {
     try {
-      final StripeCollection<InvoiceLineItem> lineItems = stripeClient.invoices().lineItems()
+      final StripeCollection<InvoiceLineItem> lineItems = stripeClient.v1().invoices().lineItems()
           .list(invoice.getId(), commonOptions());
       return Lists.newArrayList(lineItems.autoPagingIterable());
     } catch (final StripeException e) {
@@ -680,7 +690,7 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
           .addExpand("latest_attempt")
           .build();
       try {
-        final SetupIntent setupIntent = stripeClient.setupIntents().retrieve(setupIntentId, params, commonOptions());
+        final SetupIntent setupIntent = stripeClient.v1().setupIntents().retrieve(setupIntentId, params, commonOptions());
         if (setupIntent.getLatestAttemptObject() == null
             || setupIntent.getLatestAttemptObject().getPaymentMethodDetails() == null
             || setupIntent.getLatestAttemptObject().getPaymentMethodDetails().getIdeal() == null
@@ -699,6 +709,26 @@ public class StripeManager implements CustomerAwareSubscriptionPaymentProcessor 
         throw ExceptionUtils.wrap(e);
       }
     }, executor);
+  }
+
+  private Optional<InvoicePayment> getMostRecentInvoicePayment(final Invoice invoice) {
+    final List<InvoicePayment> sorted = new ArrayList<>(invoice.getPayments().getData());
+    sorted.sort(Comparator.comparingLong(InvoicePayment::getCreated).reversed());
+
+    return sorted.isEmpty() ? Optional.empty() : Optional.of(sorted.getFirst());
+  }
+
+  private Optional<Charge> getChargeForInvoicePayment(final InvoicePayment invoicePayment) {
+    return Optional.ofNullable(invoicePayment.getPayment().getPaymentIntent())
+        .map(paymentIntentId -> {
+          try {
+            return getPaymentIntent(paymentIntentId);
+          } catch (final StripeException e) {
+            throw new UncheckedIOException(new IOException(e));
+          }
+        })
+        .map(PaymentIntent::getLatestChargeObject)
+        .or(() -> Optional.ofNullable(invoicePayment.getPayment().getCharge()).map(this::getCharge));
   }
 
   /**
