@@ -10,9 +10,11 @@ import com.fasterxml.jackson.databind.annotation.JsonNaming;
 
 @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 record HlrLookupResult(String error,
+                       float creditsSpent,
                        String originalNetwork,
                        NetworkDetails originalNetworkDetails,
                        String currentNetwork,
                        NetworkDetails currentNetworkDetails,
-                       String telephoneNumberType) {
+                       String telephoneNumberType,
+                       String isPorted) {
 }
